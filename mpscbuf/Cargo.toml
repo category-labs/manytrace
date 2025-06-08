@@ -11,3 +11,6 @@ eyre.workspace = true
 libc.workspace = true
 nix.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+rstest = "0.23"

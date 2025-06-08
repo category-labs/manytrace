@@ -1,26 +1,6 @@
-use crate::memory::Memory;
-use crossbeam::utils::CachePadded;
+use crate::{Memory, Metadata};
 use eyre::Result;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[repr(C)]
-struct Metadata {
-    spinlock: CachePadded<AtomicU64>,
-    producer: AtomicU64,
-    consumer: AtomicU64,
-    dropped: AtomicU64,
-}
-
-impl Metadata {
-    fn new() -> Self {
-        Metadata {
-            spinlock: CachePadded::new(AtomicU64::new(0)),
-            producer: AtomicU64::new(0),
-            consumer: AtomicU64::new(0),
-            dropped: AtomicU64::new(0),
-        }
-    }
-}
+use std::sync::atomic::Ordering;
 
 pub struct RingBuf {
     memory: Memory,
@@ -85,12 +65,19 @@ unsafe impl Sync for RingBuf {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::*;
 
-    #[test]
-    fn test_ringbuf_creation() -> Result<()> {
+    #[fixture]
+    fn ringbuf() -> RingBuf {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-        let size = page_size * 4;
-        let ringbuf = RingBuf::new(size)?;
+        let size = page_size * 2;
+        RingBuf::new(size).unwrap()
+    }
+
+    #[rstest]
+    fn test_ringbuf_creation(ringbuf: RingBuf) -> Result<()> {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+        let size = page_size * 2;
         
         assert_eq!(ringbuf.data_size(), size - page_size);
         assert_eq!(ringbuf.consumer_pos(), 0);
@@ -99,5 +86,30 @@ mod tests {
         assert_eq!(ringbuf.size_mask(), (size - page_size - 1) as u64);
         
         Ok(())
+    }
+
+    #[rstest]
+    fn test_position_updates(ringbuf: RingBuf) {
+        assert_eq!(ringbuf.producer_pos(), 0);
+        assert_eq!(ringbuf.consumer_pos(), 0);
+        
+        ringbuf.advance_producer(100);
+        assert_eq!(ringbuf.producer_pos(), 100);
+        assert_eq!(ringbuf.consumer_pos(), 0);
+        
+        ringbuf.advance_consumer(50);
+        assert_eq!(ringbuf.producer_pos(), 100);
+        assert_eq!(ringbuf.consumer_pos(), 50);
+    }
+
+    #[rstest]
+    fn test_dropped_counter(ringbuf: RingBuf) {
+        assert_eq!(ringbuf.dropped(), 0);
+        
+        ringbuf.increment_dropped();
+        assert_eq!(ringbuf.dropped(), 1);
+        
+        ringbuf.increment_dropped();
+        assert_eq!(ringbuf.dropped(), 2);
     }
 }

@@ -1,14 +1,4 @@
-use crate::ringbuf::RingBuf;
-
-#[repr(C)]
-struct RecordHeader {
-    len: u32,
-    flags: u32,
-}
-
-const BUSY_FLAG: u32 = 1 << 31;
-const DISCARD_FLAG: u32 = 1 << 30;
-const HEADER_SIZE: usize = std::mem::size_of::<RecordHeader>();
+use crate::{RingBuf, RecordHeader, BUSY_FLAG, DISCARD_FLAG, HEADER_SIZE};
 
 pub struct Record<'a> {
     ringbuf: &'a RingBuf,
@@ -97,16 +87,16 @@ impl<'a> Iterator for ConsumerIter<'a> {
             let offset = (cons_pos & mask) as usize;
             
             let header_ptr = unsafe { data_ptr.add(offset) as *const RecordHeader };
-            let header = unsafe { header_ptr.read_volatile() };
+            let header = unsafe { &*header_ptr };
             
-            if header.flags & BUSY_FLAG != 0 {
+            if header.flags() & BUSY_FLAG != 0 {
                 return None;
             }
             
-            let record_len = header.len as usize;
+            let record_len = header.len() as usize;
             let total_len = round_up_to_8(HEADER_SIZE + record_len) as u64;
             
-            if header.flags & DISCARD_FLAG == 0 {
+            if header.flags() & DISCARD_FLAG == 0 {
                 let data_offset = offset + HEADER_SIZE;
                 let record_data = unsafe {
                     std::slice::from_raw_parts(
