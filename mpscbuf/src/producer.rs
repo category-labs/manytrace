@@ -1,27 +1,46 @@
-use crate::{MpscBufError, RecordHeader, RingBuf, HEADER_SIZE};
-use eyre::{ensure, Result};
+use crate::{eventfd::Notification, MpscBufError, RecordHeader, RingBuf, HEADER_SIZE};
 use std::ops::{Deref, DerefMut};
+use std::os::fd::BorrowedFd;
 
 pub struct Producer {
     ringbuf: RingBuf,
+    notification: Notification,
 }
 
+unsafe impl Send for Producer {}
+unsafe impl Sync for Producer {}
+
 impl Producer {
-    pub fn new(ringbuf: RingBuf) -> Self {
-        Producer { ringbuf }
+    pub fn new(
+        memory_fd: BorrowedFd,
+        memory_size: usize,
+        notification_fd: BorrowedFd,
+    ) -> Result<Self, MpscBufError> {
+        let memory_fd_owned = memory_fd
+            .try_clone_to_owned()
+            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
+        let notification_fd_owned = notification_fd.try_clone_to_owned().map_err(|_| {
+            MpscBufError::EventfdCreation("Failed to clone notification fd".to_string())
+        })?;
+
+        let ringbuf = RingBuf::from_fd(memory_fd_owned, memory_size)?;
+        let notification = unsafe { Notification::from_owned_fd(notification_fd_owned) };
+        Ok(Producer {
+            ringbuf,
+            notification,
+        })
     }
 
-    pub fn reserve(&self, size: usize) -> Result<ReservedBuffer> {
+    pub fn reserve(&self, size: usize) -> Result<ReservedBuffer, MpscBufError> {
         let _guard = self.ringbuf.metadata().spinlock.lock();
 
         let total_size = (size + HEADER_SIZE + 7) & !7;
         let producer_pos = self.ringbuf.producer_pos();
         let consumer_pos = self.ringbuf.consumer_pos();
         let data_size = self.ringbuf.data_size() as u64;
-        ensure!(
-            producer_pos - consumer_pos + total_size as u64 <= data_size,
-            MpscBufError::InsufficientSpace
-        );
+        if producer_pos - consumer_pos + total_size as u64 > data_size {
+            return Err(MpscBufError::InsufficientSpace);
+        }
 
         let offset = producer_pos & self.ringbuf.size_mask();
         let ptr = unsafe { self.ringbuf.data_ptr().add(offset as usize) };
@@ -37,6 +56,9 @@ impl Producer {
         Ok(ReservedBuffer {
             data: unsafe { std::slice::from_raw_parts_mut(data_ptr, size) },
             header: unsafe { &mut *(ptr as *mut RecordHeader) },
+            notification: &self.notification,
+            ringbuf: &self.ringbuf,
+            record_pos: offset,
         })
     }
 }
@@ -44,6 +66,9 @@ impl Producer {
 pub struct ReservedBuffer<'a> {
     data: &'a mut [u8],
     header: &'a mut RecordHeader,
+    notification: &'a Notification,
+    ringbuf: &'a RingBuf,
+    record_pos: u64,
 }
 
 impl<'a> ReservedBuffer<'a> {
@@ -57,14 +82,21 @@ impl<'a> ReservedBuffer<'a> {
 
     pub fn discard(self) {
         self.header.discard();
-        // SAFETY nothing is owned by ReservedBuffer
-        std::mem::forget(self);
     }
 }
 
 impl<'a> Drop for ReservedBuffer<'a> {
     fn drop(&mut self) {
-        self.header.commit();
+        if !self.header.is_discarded() {
+            self.header.commit();
+        }
+        let consumer_pos = self.ringbuf.consumer_pos();
+        let mask = self.ringbuf.size_mask();
+        let consumer_offset = consumer_pos & mask;
+
+        if consumer_offset == self.record_pos {
+            let _ = self.notification.notify();
+        }
     }
 }
 
@@ -86,17 +118,28 @@ impl<'a> DerefMut for ReservedBuffer<'a> {
 mod tests {
     use super::*;
     use rstest::*;
+    use std::thread;
+    use std::time::Duration;
+
+    #[fixture]
+    fn producer_and_consumer() -> (Producer, crate::Consumer) {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+        let size = page_size * 2;
+        let consumer = crate::Consumer::new(size).unwrap();
+        let memory_fd = consumer.memory_fd();
+        let memory_size = consumer.memory_size();
+        let notification_fd = consumer.notification_fd();
+        let producer = Producer::new(memory_fd, memory_size, notification_fd).unwrap();
+        (producer, consumer)
+    }
 
     #[fixture]
     fn producer() -> Producer {
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-        let size = page_size * 2;
-        let ringbuf = RingBuf::new(size).unwrap();
-        Producer::new(ringbuf)
+        producer_and_consumer().0
     }
 
     #[rstest]
-    fn test_reserve_and_commit(producer: Producer) -> Result<()> {
+    fn test_reserve_and_commit(producer: Producer) -> Result<(), MpscBufError> {
         let data = b"hello world!";
         let data_len = data.len();
 
@@ -119,7 +162,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_explicit_discard(producer: Producer) -> Result<()> {
+    fn test_explicit_discard(producer: Producer) -> Result<(), MpscBufError> {
         let initial_pos = producer.ringbuf.producer_pos();
 
         {
@@ -139,14 +182,14 @@ mod tests {
     #[rstest]
     #[case::small_messages(&[&b"hello"[..], &b"world"[..]])]
     #[case::mixed_messages(&[&b"first message"[..], &b"second message"[..], &b"third message"[..]])]
-    fn test_single_writer_reader(producer: Producer, #[case] messages: &[&[u8]]) -> Result<()> {
+    fn test_single_writer_reader(#[case] messages: &[&[u8]]) -> Result<(), MpscBufError> {
+        let (producer, consumer) = producer_and_consumer();
+
         for msg in messages {
             let mut reserved = producer.reserve(msg.len())?;
             // Can now use reserved directly as a slice thanks to DerefMut
             reserved[..msg.len()].copy_from_slice(msg);
         }
-
-        let consumer = crate::Consumer::new(producer.ringbuf);
         let mut count = 0;
 
         for (i, record) in consumer.iter().enumerate() {
@@ -167,12 +210,11 @@ mod tests {
     #[case(32)]
     #[case(64)]
     #[case(128)]
-    fn test_various_sizes(producer: Producer, #[case] size: usize) -> Result<()> {
+    fn test_various_sizes(producer: Producer, #[case] size: usize) -> Result<(), MpscBufError> {
         let initial_pos = producer.ringbuf.producer_pos();
 
         {
             let mut reserved = producer.reserve(size)?;
-            // Can now use reserved directly as a slice thanks to DerefMut
             for (i, byte) in reserved[..size].iter_mut().enumerate() {
                 *byte = (i % 256) as u8;
             }
@@ -194,15 +236,84 @@ mod tests {
     }
 
     #[rstest]
-    fn test_insufficient_space(producer: Producer) -> Result<()> {
+    fn test_insufficient_space(producer: Producer) -> Result<(), MpscBufError> {
         let data_size = producer.ringbuf.data_size();
         let large_size = data_size / 2;
-
-        // First reservation should succeed
         let _reserved1 = producer.reserve(large_size)?;
-
-        // Second reservation should fail due to insufficient space
         assert!(producer.reserve(large_size).is_err());
+        Ok(())
+    }
+
+    #[rstest]
+    fn test_multi_threaded_producer_consumer() -> Result<(), MpscBufError> {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+        let size = page_size * 8;
+        let consumer = crate::Consumer::new(size)?;
+
+        let memory_fd = consumer.memory_fd();
+        let memory_size = consumer.memory_size();
+        let notification_fd = consumer.notification_fd();
+
+        let producer1 = Producer::new(memory_fd, memory_size, notification_fd)?;
+        let producer2 = Producer::new(memory_fd, memory_size, notification_fd)?;
+
+        let consumer_handle = thread::spawn(move || {
+            let mut count = 0;
+            let mut messages = Vec::new();
+
+            for record_result in consumer.blocking_iter() {
+                match record_result {
+                    Ok(record) => {
+                        let data = String::from_utf8_lossy(record.as_slice());
+                        messages.push(data.to_string());
+                        count += 1;
+                        if count >= 20 {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            messages
+        });
+
+        thread::sleep(Duration::from_millis(10));
+
+        let handle1 = {
+            thread::spawn(move || {
+                for i in 0..10 {
+                    let data = format!("message_from_thread1_{}", i);
+                    let mut reserved = producer1.reserve(data.len()).unwrap();
+                    reserved.copy_from_slice(data.as_bytes());
+                    thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+
+        let handle2 = {
+            thread::spawn(move || {
+                for i in 0..10 {
+                    let data = format!("message_from_thread2_{}", i);
+                    let mut reserved = producer2.reserve(data.len()).unwrap();
+                    reserved.copy_from_slice(data.as_bytes());
+                    thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+
+        handle1.join().expect("Thread 1 panicked");
+        handle2.join().expect("Thread 2 panicked");
+
+        thread::sleep(Duration::from_millis(100));
+
+        let messages = consumer_handle.join().expect("Consumer thread panicked");
+
+        let thread1_messages = messages.iter().filter(|m| m.contains("thread1")).count();
+        let thread2_messages = messages.iter().filter(|m| m.contains("thread2")).count();
+
+        assert!(thread1_messages > 0, "Should have messages from thread 1");
+        assert!(thread2_messages > 0, "Should have messages from thread 2");
+        assert_eq!(messages.len(), 20, "Should have 20 total messages");
 
         Ok(())
     }

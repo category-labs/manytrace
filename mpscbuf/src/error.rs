@@ -19,4 +19,13 @@ pub enum MpscBufError {
 
     #[error("invalid record size: {0}")]
     InvalidRecordSize(usize),
+
+    #[error("eventfd creation failed: {0}")]
+    EventfdCreation(String),
+
+    #[error("eventfd write failed: {0}")]
+    EventfdWrite(String),
+
+    #[error("eventfd read failed: {0}")]
+    EventfdRead(String),
 }

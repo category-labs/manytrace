@@ -12,7 +12,7 @@ license = "MIT OR Apache-2.0"
 crossbeam = "0.8"
 eyre = "0.6"
 libc = "0.2"
-nix = { version = "0.30", features = ["mman", "fs"] }
+nix = { version = "0.30", features = ["mman", "fs", "event"] }
 rstest = "0.23"
 spinning_top = "0.3"
 thiserror = "2.0"

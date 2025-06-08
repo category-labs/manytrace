@@ -1,5 +1,6 @@
-use crate::{Memory, Metadata};
+use crate::{Memory, Metadata, MpscBufError};
 use eyre::Result;
+use std::os::fd::AsFd;
 use std::sync::atomic::Ordering;
 
 pub struct RingBuf {
@@ -7,13 +8,21 @@ pub struct RingBuf {
 }
 
 impl RingBuf {
-    pub fn new(size: usize) -> Result<Self> {
-        let memory = Memory::new(size)?;
+    pub fn new(size: usize) -> Result<Self, MpscBufError> {
+        let memory =
+            Memory::new(size).map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
 
         let metadata_ptr = memory.metadata_ptr().as_ptr() as *mut Metadata;
         unsafe {
             metadata_ptr.write(Metadata::new());
         }
+
+        Ok(RingBuf { memory })
+    }
+
+    pub fn from_fd(fd: std::os::fd::OwnedFd, size: usize) -> Result<Self, MpscBufError> {
+        let memory = Memory::from_fd(fd, size)
+            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
 
         Ok(RingBuf { memory })
     }
@@ -61,10 +70,19 @@ impl RingBuf {
     pub fn increment_dropped(&self) {
         self.metadata().dropped.fetch_add(1, Ordering::Release);
     }
+
+    pub fn clone_fd(&self) -> Result<std::os::fd::OwnedFd, MpscBufError> {
+        self.memory
+            .clone_fd()
+            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))
+    }
+
+    pub fn memory_fd(&self) -> std::os::fd::BorrowedFd {
+        self.memory.fd().as_fd()
+    }
 }
 
 unsafe impl Send for RingBuf {}
-unsafe impl Sync for RingBuf {}
 
 #[cfg(test)]
 mod tests {

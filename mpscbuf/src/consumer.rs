@@ -1,4 +1,7 @@
-use crate::{RecordHeader, RingBuf, BUSY_FLAG, DISCARD_FLAG, HEADER_SIZE};
+use crate::{
+    eventfd::Notification, MpscBufError, RecordHeader, RingBuf, BUSY_FLAG, DISCARD_FLAG,
+    HEADER_SIZE,
+};
 
 pub struct Record<'a> {
     ringbuf: &'a RingBuf,
@@ -28,15 +31,41 @@ impl<'a> Drop for Record<'a> {
 
 pub struct Consumer {
     ringbuf: RingBuf,
+    notification: Notification,
 }
 
 impl Consumer {
-    pub fn new(ringbuf: RingBuf) -> Self {
-        Consumer { ringbuf }
+    pub fn new(size: usize) -> Result<Self, MpscBufError> {
+        let ringbuf = RingBuf::new(size)?;
+        let notification = Notification::new()?;
+        Ok(Consumer {
+            ringbuf,
+            notification,
+        })
+    }
+
+    pub fn notification(&self) -> &Notification {
+        &self.notification
+    }
+
+    pub fn notification_fd(&self) -> std::os::fd::BorrowedFd {
+        self.notification.fd()
+    }
+
+    pub fn memory_fd(&self) -> std::os::fd::BorrowedFd {
+        self.ringbuf.memory_fd()
+    }
+
+    pub fn memory_size(&self) -> usize {
+        self.ringbuf.data_size() + unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
     }
 
     pub fn iter(&self) -> ConsumerIter {
         ConsumerIter::new(&self.ringbuf)
+    }
+
+    pub fn blocking_iter(&self) -> BlockingConsumerIter {
+        BlockingConsumerIter::new(&self.ringbuf, &self.notification)
     }
 
     pub fn available_records(&self) -> u64 {
@@ -104,6 +133,36 @@ impl<'a> Iterator for ConsumerIter<'a> {
                 return Some(Record::new(self.ringbuf, record_data, total_len));
             } else {
                 self.ringbuf.advance_consumer(total_len);
+            }
+        }
+    }
+}
+
+pub struct BlockingConsumerIter<'a> {
+    iter: ConsumerIter<'a>,
+    notification: &'a Notification,
+}
+
+impl<'a> BlockingConsumerIter<'a> {
+    fn new(ringbuf: &'a RingBuf, notification: &'a Notification) -> Self {
+        BlockingConsumerIter {
+            iter: ConsumerIter::new(ringbuf),
+            notification,
+        }
+    }
+}
+
+impl<'a> Iterator for BlockingConsumerIter<'a> {
+    type Item = Result<Record<'a>, MpscBufError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(record) = self.iter.next() {
+                return Some(Ok(record));
+            }
+
+            if let Err(e) = self.notification.wait() {
+                return Some(Err(e));
             }
         }
     }

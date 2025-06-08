@@ -5,6 +5,7 @@ use nix::sys::memfd::{memfd_create, MFdFlags};
 use nix::sys::mman::{mmap, mmap_anonymous, munmap, MapFlags, ProtFlags};
 use nix::unistd::ftruncate;
 use std::num::NonZero;
+use std::os::unix::io::AsFd;
 
 pub struct Memory {
     ptr: NonNull<u8>,
@@ -26,6 +27,17 @@ impl Memory {
             .wrap_err("failed to create memory file descriptor")?;
 
         ftruncate(&fd, size as i64).wrap_err("failed to set memory file size")?;
+
+        Self::from_fd(fd, size)
+    }
+
+    pub fn from_fd(fd: std::os::fd::OwnedFd, size: usize) -> Result<Self> {
+        let page_size = get_page_size();
+        ensure!(
+            size % page_size == 0,
+            MpscBufError::SizeNotAligned(page_size)
+        );
+        ensure!(size >= 2 * page_size, MpscBufError::SizeTooSmall(page_size));
 
         let total_size = size * 2;
         let ptr = unsafe {
@@ -102,6 +114,13 @@ impl Memory {
 
     pub fn fd(&self) -> &std::os::fd::OwnedFd {
         &self.fd
+    }
+
+    pub fn clone_fd(&self) -> Result<std::os::fd::OwnedFd> {
+        self.fd
+            .as_fd()
+            .try_clone_to_owned()
+            .wrap_err("failed to clone memory file descriptor")
     }
 }
 

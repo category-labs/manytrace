@@ -1,5 +1,6 @@
 pub mod consumer;
 pub mod error;
+pub mod eventfd;
 pub mod memory;
 pub mod producer;
 pub mod ringbuf;
@@ -51,22 +52,28 @@ impl RecordHeader {
     }
 
     pub fn discard(&self) {
-        let current = self.header.load(Ordering::Acquire);
+        let current = self.header.load(Ordering::Relaxed);
         let len = current as u32;
         let new_flags = DISCARD_FLAG;
         let new_value = (len as u64) | ((new_flags as u64) << 32);
-        self.header.store(new_value, Ordering::Release);
+        self.header.store(new_value, Ordering::Relaxed);
+    }
+
+    pub fn is_discarded(&self) -> bool {
+        let current = self.header.load(Ordering::Relaxed);
+        let flags = (current >> 32) as u32;
+        flags & DISCARD_FLAG != 0
     }
 
     pub fn commit(&self) {
-        let current = self.header.load(Ordering::Acquire);
+        let current = self.header.load(Ordering::Relaxed);
         let len = current as u32;
         let new_value = len as u64;
-        self.header.store(new_value, Ordering::Release);
+        self.header.store(new_value, Ordering::Relaxed);
     }
 
     pub fn len(&self) -> u32 {
-        let current = self.header.load(Ordering::Acquire);
+        let current = self.header.load(Ordering::Relaxed);
         current as u32
     }
 
@@ -75,7 +82,7 @@ impl RecordHeader {
     }
 
     pub fn flags(&self) -> u32 {
-        let current = self.header.load(Ordering::Acquire);
+        let current = self.header.load(Ordering::Relaxed);
         (current >> 32) as u32
     }
 }
