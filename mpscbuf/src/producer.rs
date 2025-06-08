@@ -1,11 +1,12 @@
-use crate::{sync::notification::Notification, MpscBufError, RecordHeader, RingBuf, HEADER_SIZE};
+use crate::{
+    consumer::round_up_to_8, sync::notification::Notification, MpscBufError, RecordHeader, RingBuf,
+    HEADER_SIZE,
+};
 use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeupStrategy {
-    /// Only wake up when consumer is waiting at exactly this record position
     SelfPacing,
-    /// Always wake up consumer on commit
     Forced,
 }
 
@@ -36,8 +37,7 @@ impl Producer {
 
     pub fn reserve(&self, size: usize) -> Result<ReservedBuffer, MpscBufError> {
         let _guard = self.ringbuf.metadata().spinlock.lock();
-
-        let total_size = (size + HEADER_SIZE + 7) & !7;
+        let total_size = round_up_to_8(size + HEADER_SIZE);
 
         let consumer_pos = self.ringbuf.consumer_pos();
         let producer_pos = self.ringbuf.producer_pos();
@@ -53,10 +53,9 @@ impl Producer {
             let header = RecordHeader::new(size as u32);
             (ptr as *mut RecordHeader).write(header);
         }
+        let data_ptr = unsafe { ptr.add(HEADER_SIZE) };
         self.ringbuf
             .advance_producer(producer_pos + total_size as u64);
-
-        let data_ptr = unsafe { ptr.add(HEADER_SIZE) };
         Ok(ReservedBuffer {
             data: unsafe { std::slice::from_raw_parts_mut(data_ptr, size) },
             header: unsafe { &mut *(ptr as *mut RecordHeader) },
@@ -164,7 +163,6 @@ mod tests {
 
         {
             let mut reserved = producer.reserve(data_len)?;
-            // Can now use reserved directly as a slice thanks to DerefMut
             reserved[..data_len].copy_from_slice(data);
         }
 
@@ -259,9 +257,137 @@ mod tests {
     }
 
     #[rstest]
-    fn test_multi_threaded_producer_consumer() -> Result<(), MpscBufError> {
+    fn test_wrap_around_with_small_buffer() -> Result<(), MpscBufError> {
+        // Use minimum size (2 pages) where first page is metadata
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-        let size = page_size * 8;
+        let size = page_size * 2; // Minimum allowed size
+        let ringbuf = RingBuf::new(size)?;
+        let notification = Notification::new()?;
+
+        let ringbuf_consumer = RingBuf::from_fd(ringbuf.clone_fd().unwrap(), size)?;
+        let notification_consumer =
+            unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
+
+        let consumer = crate::Consumer::new(ringbuf_consumer, notification_consumer);
+        let producer =
+            Producer::with_wakeup_strategy(ringbuf, notification, WakeupStrategy::Forced);
+
+        // Data size is size - page_size (first page is metadata)
+        let _data_size = size - page_size;
+        // Use smaller messages to fit more in the buffer
+        let message_size = 256;
+        let num_messages = 50; // This will cause many wrap-arounds
+
+        let producer_handle = thread::spawn(move || {
+            for i in 0..num_messages {
+                let mut data = vec![0u8; message_size];
+                for (j, byte) in data.iter_mut().enumerate() {
+                    *byte = ((i * 256 + j) % 256) as u8;
+                }
+
+                loop {
+                    match producer.reserve(message_size) {
+                        Ok(mut reserved) => {
+                            reserved.copy_from_slice(&data);
+                            break;
+                        }
+                        Err(MpscBufError::InsufficientSpace) => {
+                            thread::sleep(Duration::from_micros(100));
+                        }
+                        Err(e) => panic!("Unexpected error: {:?}", e),
+                    }
+                }
+            }
+        });
+
+        let consumer_handle = thread::spawn(move || {
+            let mut received_messages = Vec::new();
+            let mut count = 0;
+
+            for record_result in consumer.blocking_iter() {
+                match record_result {
+                    Ok(record) => {
+                        let data = record.as_slice().to_vec();
+                        received_messages.push(data);
+                        count += 1;
+                        if count >= num_messages {
+                            break;
+                        }
+                    }
+                    Err(e) => panic!("Consumer error: {:?}", e),
+                }
+            }
+            received_messages
+        });
+
+        producer_handle.join().expect("Producer thread panicked");
+        let received_messages = consumer_handle.join().expect("Consumer thread panicked");
+
+        assert_eq!(received_messages.len(), num_messages);
+
+        for (i, message) in received_messages.iter().enumerate() {
+            assert_eq!(message.len(), message_size);
+            // Verify the pattern
+            for (j, &byte) in message.iter().enumerate() {
+                let expected = ((i * 256 + j) % 256) as u8;
+                assert_eq!(byte, expected, "Mismatch at message {} byte {}", i, j);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[rstest]
+    fn test_simple_multi_threaded() -> Result<(), MpscBufError> {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+        let size = page_size * 4; // Smaller buffer
+        let ringbuf = RingBuf::new(size)?;
+        let notification = Notification::new()?;
+
+        let ringbuf_consumer = RingBuf::from_fd(ringbuf.clone_fd().unwrap(), size)?;
+        let notification_consumer =
+            unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
+
+        let consumer = crate::Consumer::new(ringbuf_consumer, notification_consumer);
+        let producer =
+            Producer::with_wakeup_strategy(ringbuf, notification, WakeupStrategy::Forced);
+
+        let num_messages = 10;
+        let producer_handle = thread::spawn(move || {
+            for i in 0..num_messages {
+                let data = format!("msg{}", i);
+                let mut reserved = producer.reserve(data.len()).unwrap();
+                reserved.copy_from_slice(data.as_bytes());
+                thread::sleep(Duration::from_micros(100));
+            }
+        });
+
+        let consumer_handle = thread::spawn(move || {
+            let mut count = 0;
+            for record_result in consumer.blocking_iter() {
+                match record_result {
+                    Ok(_record) => {
+                        count += 1;
+                        if count >= num_messages {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            count
+        });
+
+        producer_handle.join().expect("Producer thread panicked");
+        let received_count = consumer_handle.join().expect("Consumer thread panicked");
+
+        assert_eq!(received_count, num_messages);
+        Ok(())
+    }
+
+    #[rstest]
+    fn test_two_producers() -> Result<(), MpscBufError> {
+        let size = 2 * 1024 * 1024;
         let ringbuf = RingBuf::new(size)?;
         let notification = Notification::new()?;
 
@@ -284,62 +410,46 @@ mod tests {
             WakeupStrategy::SelfPacing,
         );
 
-        let handle1 = {
-            thread::spawn(move || {
-                for i in 0..10 {
-                    let data = format!("message_from_thread1_{}", i);
-                    let mut reserved = producer1.reserve(data.len()).unwrap();
-                    reserved.copy_from_slice(data.as_bytes());
-                    thread::sleep(Duration::from_millis(1));
-                }
-            })
-        };
+        let num_messages = 10000;
+        let handle1 = thread::spawn(move || {
+            for _ in 0..num_messages / 2 {
+                let data = format!("aaaaaaaaaaaaaaaaaa");
+                let mut reserved = producer1.reserve(data.len()).unwrap();
+                reserved.copy_from_slice(data.as_bytes());
+                thread::sleep(Duration::from_micros(100));
+            }
+        });
 
-        let handle2 = {
-            thread::spawn(move || {
-                for i in 0..10 {
-                    let data = format!("message_from_thread2_{}", i);
-                    let mut reserved = producer2.reserve(data.len()).unwrap();
-                    reserved.copy_from_slice(data.as_bytes());
-                    thread::sleep(Duration::from_millis(1));
-                }
-            })
-        };
-        thread::sleep(Duration::from_millis(1));
+        let handle2 = thread::spawn(move || {
+            for _ in 0..num_messages / 2 {
+                let data = format!("aaaaaaaaaaaaaaaaaa");
+                let mut reserved = producer2.reserve(data.len()).unwrap();
+                reserved.copy_from_slice(data.as_bytes());
+                thread::sleep(Duration::from_micros(100));
+            }
+        });
+
         let consumer_handle = thread::spawn(move || {
             let mut count = 0;
-            let mut messages = Vec::new();
-
             for record_result in consumer.blocking_iter() {
                 match record_result {
-                    Ok(record) => {
-                        let data = String::from_utf8_lossy(record.as_slice());
-                        messages.push(data.to_string());
+                    Ok(_record) => {
                         count += 1;
-                        if count >= 20 {
+                        if count >= num_messages {
                             break;
                         }
                     }
                     Err(_) => break,
                 }
             }
-            messages
+            count
         });
 
-        handle1.join().expect("Thread 1 panicked");
-        handle2.join().expect("Thread 2 panicked");
+        handle1.join().expect("Producer 1 panicked");
+        handle2.join().expect("Producer 2 panicked");
+        let received_count = consumer_handle.join().expect("Consumer thread panicked");
 
-        thread::sleep(Duration::from_millis(100));
-
-        let messages = consumer_handle.join().expect("Consumer thread panicked");
-
-        let thread1_messages = messages.iter().filter(|m| m.contains("thread1")).count();
-        let thread2_messages = messages.iter().filter(|m| m.contains("thread2")).count();
-
-        assert!(thread1_messages > 0, "Should have messages from thread 1");
-        assert!(thread2_messages > 0, "Should have messages from thread 2");
-        assert_eq!(messages.len(), 20, "Should have 20 total messages");
-
+        assert_eq!(received_count, num_messages);
         Ok(())
     }
 }

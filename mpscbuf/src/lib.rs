@@ -53,20 +53,15 @@ impl RecordHeader {
     pub fn discard(&self) {
         let current = self.header.load(Ordering::Relaxed);
         let len = current as u32;
-        let new_flags = DISCARD_FLAG;
-        let new_value = (len as u64) | ((new_flags as u64) << 32);
-        let _ =
-            self.header
-                .compare_exchange(current, new_value, Ordering::AcqRel, Ordering::Relaxed);
+        let new_value = (len as u64) | ((DISCARD_FLAG as u64) << 32);
+        self.header.store(new_value, Ordering::Release);
     }
 
     pub fn commit(&self) {
         let current = self.header.load(Ordering::Relaxed);
         let len = current as u32;
         let new_value = len as u64;
-        let _ =
-            self.header
-                .compare_exchange(current, new_value, Ordering::AcqRel, Ordering::Relaxed);
+        self.header.store(new_value, Ordering::Release);
     }
 
     pub fn is_discarded(&self) -> bool {
@@ -75,18 +70,16 @@ impl RecordHeader {
         flags & DISCARD_FLAG != 0
     }
 
-    pub fn len(&self) -> u32 {
-        let current = self.header.load(Ordering::Relaxed);
-        current as u32
+    pub fn len_and_flags(&self) -> (u32, u32) {
+        let current = self.header.load(Ordering::Acquire);
+        let len = current as u32;
+        let flags = (current >> 32) as u32;
+        (len, flags)
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn flags(&self) -> u32 {
-        let current = self.header.load(Ordering::Relaxed);
-        (current >> 32) as u32
+    pub fn write_initial(&self, len: u32) {
+        let header_value = (len as u64) | ((BUSY_FLAG as u64) << 32);
+        self.header.store(header_value, Ordering::Release);
     }
 }
 

@@ -15,5 +15,4 @@ eyre = "0.6"
 libc = "0.2"
 nix = { version = "0.30", features = ["mman", "fs", "event"] }
 rstest = "0.23"
-spinning_top = "0.3"
 thiserror = "2.0"

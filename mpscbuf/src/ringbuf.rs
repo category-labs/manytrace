@@ -26,10 +26,6 @@ impl RingBuf {
         Ok(RingBuf { memory })
     }
 
-    pub fn from_shared(memory: Memory) -> Self {
-        RingBuf { memory }
-    }
-
     pub fn metadata(&self) -> &Metadata {
         unsafe { &*(self.memory.metadata_ptr().as_ptr() as *const Metadata) }
     }

@@ -39,11 +39,13 @@ impl Memory {
         );
         ensure!(size >= 2 * page_size, MpscBufError::SizeTooSmall(page_size));
 
-        let total_size = size * 2;
+        let data_size = size - page_size;
+        let total_virtual_size = page_size + 2 * data_size;
+
         let ptr = unsafe {
             mmap_anonymous(
                 None,
-                NonZero::new(total_size).unwrap(),
+                NonZero::new(total_virtual_size).unwrap(),
                 ProtFlags::PROT_NONE,
                 MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS,
             )
@@ -59,29 +61,30 @@ impl Memory {
                 &fd,
                 0,
             )
-            .wrap_err("failed to map first half of ring buffer")?;
+            .wrap_err("failed to map metadata and first data region")?;
         }
 
         unsafe {
             mmap(
                 Some(NonZero::new(ptr.as_ptr().add(size) as usize).unwrap()),
-                NonZero::new(size).unwrap(),
+                NonZero::new(data_size).unwrap(),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED | MapFlags::MAP_FIXED,
                 &fd,
-                0,
+                page_size as i64,
             )
-            .wrap_err("failed to map second half of ring buffer")?;
+            .wrap_err("failed to map second data region")?;
         }
 
         let ptr = NonNull::new(ptr.as_ptr() as *mut u8).expect("mmap returned null pointer");
 
-        Ok(Memory {
+        let memory = Memory {
             ptr,
             size,
             page_size,
             fd,
-        })
+        };
+        Ok(memory)
     }
 
     pub fn as_ptr(&self) -> NonNull<u8> {
@@ -127,9 +130,11 @@ impl Memory {
 impl Drop for Memory {
     fn drop(&mut self) {
         unsafe {
+            let data_size = self.size - self.page_size;
+            let total_virtual_size = self.page_size + 2 * data_size;
             let _ = munmap(
                 NonNull::new(self.ptr.as_ptr() as *mut _).unwrap(),
-                self.size * 2,
+                total_virtual_size,
             );
         }
     }
@@ -151,25 +156,38 @@ mod tests {
         let size = page_size * 2;
         let memory = Memory::new(size)?;
 
-        let ptr = memory.as_ptr().as_ptr();
+        let metadata_ptr = memory.metadata_ptr().as_ptr();
+        let data_ptr = memory.data_ptr().as_ptr();
+        let data_size = memory.data_size();
 
         unsafe {
-            for i in 0..size {
+            for i in 0..page_size {
                 let byte_value = (i % 256) as u8;
-                ptr.add(i).write(byte_value);
+                metadata_ptr.add(i).write(byte_value);
             }
 
-            for i in 0..size {
-                let expected = (i % 256) as u8;
-                let actual = ptr.add(i).read();
-                assert_eq!(actual, expected, "mismatch at position {}", i);
+            for i in 0..data_size {
+                let byte_value = ((i + 100) % 256) as u8;
+                data_ptr.add(i).write(byte_value);
+            }
 
-                let wrapped_actual = ptr.add(i + size).read();
+            for i in 0..page_size {
+                let expected = (i % 256) as u8;
+                let actual = metadata_ptr.add(i).read();
+                assert_eq!(actual, expected, "mismatch at metadata position {}", i);
+            }
+
+            for i in 0..data_size {
+                let expected = ((i + 100) % 256) as u8;
+                let actual = data_ptr.add(i).read();
+                assert_eq!(actual, expected, "mismatch at data position {}", i);
+
+                let wrapped_actual = data_ptr.add(i + data_size).read();
                 assert_eq!(
                     wrapped_actual,
                     expected,
-                    "mismatch at wrapped position {}",
-                    i + size
+                    "mismatch at wrapped data position {}",
+                    i + data_size
                 );
             }
         }
@@ -183,23 +201,29 @@ mod tests {
         let size = page_size * 2;
         let memory = Memory::new(size)?;
 
-        let ptr = memory.as_ptr().as_ptr();
+        let data_ptr = memory.data_ptr().as_ptr();
+        let data_size = memory.data_size();
         let pattern = b"ABCDEFGH";
 
         unsafe {
-            let start_pos = size - pattern.len() / 2;
+            let start_pos = data_size - pattern.len() / 2;
             for (i, &byte) in pattern.iter().enumerate() {
-                ptr.add(start_pos + i).write(byte);
+                data_ptr.add(start_pos + i).write(byte);
             }
 
             for (i, &expected) in pattern.iter().enumerate() {
-                let actual = ptr.add(start_pos + i).read();
+                let actual = data_ptr.add(start_pos + i).read();
                 assert_eq!(actual, expected, "mismatch at position {}", start_pos + i);
             }
 
-            for (i, &expected) in pattern[pattern.len() / 2..].iter().enumerate() {
-                let actual = ptr.add(i).read();
-                assert_eq!(actual, expected, "mismatch at wrapped position {}", i);
+            for (i, &expected) in pattern.iter().enumerate() {
+                let wrapped_pos = (start_pos + i) % data_size;
+                let actual = data_ptr.add(data_size + wrapped_pos).read();
+                assert_eq!(
+                    actual, expected,
+                    "mismatch at wrapped position {}",
+                    wrapped_pos
+                );
             }
         }
 

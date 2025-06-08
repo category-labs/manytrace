@@ -5,7 +5,80 @@ pub use std::sync::atomic::{AtomicU64, Ordering};
 pub use loom::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(not(feature = "loom"))]
-pub use spinning_top::Spinlock;
+pub struct Spinlock<T> {
+    lock: AtomicU64,
+    value: std::cell::UnsafeCell<T>,
+}
+
+#[cfg(not(feature = "loom"))]
+unsafe impl<T: Send> Sync for Spinlock<T> {}
+
+#[cfg(not(feature = "loom"))]
+unsafe impl<T: Send> Send for Spinlock<T> {}
+
+#[cfg(not(feature = "loom"))]
+pub struct SpinlockGuard<'a, T> {
+    spinlock: &'a Spinlock<T>,
+}
+
+#[cfg(not(feature = "loom"))]
+impl<T> Spinlock<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            lock: AtomicU64::new(0),
+            value: std::cell::UnsafeCell::new(value),
+        }
+    }
+
+    pub fn lock(&self) -> SpinlockGuard<T> {
+        loop {
+            if self
+                .lock
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+            std::hint::spin_loop();
+        }
+        SpinlockGuard { spinlock: self }
+    }
+
+    pub fn try_lock(&self) -> Option<SpinlockGuard<T>> {
+        if self
+            .lock
+            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            Some(SpinlockGuard { spinlock: self })
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "loom"))]
+impl<'a, T> std::ops::Deref for SpinlockGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.spinlock.value.get() }
+    }
+}
+
+#[cfg(not(feature = "loom"))]
+impl<'a, T> std::ops::DerefMut for SpinlockGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.spinlock.value.get() }
+    }
+}
+
+#[cfg(not(feature = "loom"))]
+impl<'a, T> Drop for SpinlockGuard<'a, T> {
+    fn drop(&mut self) {
+        self.spinlock.lock.store(0, Ordering::Release);
+    }
+}
 
 #[cfg(feature = "loom")]
 pub struct Spinlock<T> {

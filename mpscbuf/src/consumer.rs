@@ -109,23 +109,21 @@ impl<'a> Iterator for ConsumerIter<'a> {
             let offset = (cons_pos & mask) as usize;
 
             let header_ptr = unsafe { data_ptr.add(offset) as *const RecordHeader };
-            let header = unsafe { &*header_ptr };
 
-            if header.flags() & BUSY_FLAG != 0 {
+            let header = unsafe { &*header_ptr };
+            let (record_len_u32, flags) = header.len_and_flags();
+
+            if flags & BUSY_FLAG != 0 {
                 return None;
             }
 
-            let record_len = header.len() as usize;
+            let record_len = record_len_u32 as usize;
             let total_len = round_up_to_8(HEADER_SIZE + record_len) as u64;
 
-            if header.flags() & DISCARD_FLAG == 0 {
+            if flags & DISCARD_FLAG == 0 {
                 let data_offset = offset + HEADER_SIZE;
-                let record_data = unsafe {
-                    std::slice::from_raw_parts(
-                        data_ptr.add(data_offset & mask as usize),
-                        record_len,
-                    )
-                };
+                let record_data =
+                    unsafe { std::slice::from_raw_parts(data_ptr.add(data_offset), record_len) };
                 return Some(Record::new(self.ringbuf, record_data, cons_pos + total_len));
             } else {
                 self.ringbuf.advance_consumer(cons_pos + total_len);
@@ -169,6 +167,6 @@ impl<'a> Iterator for BlockingConsumerIter<'a> {
     }
 }
 
-fn round_up_to_8(len: usize) -> usize {
-    (len + 7) & !7
+pub fn round_up_to_8(len: usize) -> usize {
+    len.div_ceil(8) * 8
 }
