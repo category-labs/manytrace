@@ -18,5 +18,10 @@ spinning_top.workspace = true
 thiserror.workspace = true
 loom = { version = "0.7.2", optional = true }
 
+[[bench]]
+name = "ringbuf"
+harness = false
+
 [dev-dependencies]
+divan.workspace = true
 rstest.workspace = true

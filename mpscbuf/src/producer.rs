@@ -38,6 +38,7 @@ impl Producer {
         let _guard = self.ringbuf.metadata().spinlock.lock();
 
         let total_size = (size + HEADER_SIZE + 7) & !7;
+
         let consumer_pos = self.ringbuf.consumer_pos();
         let producer_pos = self.ringbuf.producer_pos();
         let data_size = self.ringbuf.data_size() as u64;
