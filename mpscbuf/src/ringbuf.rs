@@ -61,6 +61,22 @@ impl RingBuf {
     pub fn dropped(&self) -> u64 {
         self.metadata().dropped.load(Ordering::Relaxed)
     }
+    
+    pub fn data_ptr(&self) -> *mut u8 {
+        self.memory.data_ptr().as_ptr()
+    }
+    
+    pub fn advance_producer(&self, amount: u64) {
+        self.metadata().producer.fetch_add(amount, Ordering::Release);
+    }
+    
+    pub fn advance_consumer(&self, amount: u64) {
+        self.metadata().consumer.fetch_add(amount, Ordering::Release);
+    }
+    
+    pub fn increment_dropped(&self) {
+        self.metadata().dropped.fetch_add(1, Ordering::Release);
+    }
 }
 
 unsafe impl Send for RingBuf {}
