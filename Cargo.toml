@@ -5,4 +5,11 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+authors = ["manytrace contributors"]
 license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+eyre = "0.6"
+libc = "0.2"
+nix = { version = "0.30", features = ["mman", "fs"] }
+thiserror = "2.0"
