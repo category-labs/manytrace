@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["loom"]
+loom = ["dep:loom"]
+
 [dependencies]
 crossbeam.workspace = true
 eyre.workspace = true
@@ -12,6 +16,7 @@ libc.workspace = true
 nix.workspace = true
 spinning_top.workspace = true
 thiserror.workspace = true
+loom = { version = "0.7.2", optional = true }
 
 [dev-dependencies]
 rstest.workspace = true

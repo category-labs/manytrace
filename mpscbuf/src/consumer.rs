@@ -1,5 +1,5 @@
 use crate::{
-    eventfd::Notification, MpscBufError, RecordHeader, RingBuf, BUSY_FLAG, DISCARD_FLAG,
+    sync::notification::Notification, MpscBufError, RecordHeader, RingBuf, BUSY_FLAG, DISCARD_FLAG,
     HEADER_SIZE,
 };
 
@@ -35,13 +35,11 @@ pub struct Consumer {
 }
 
 impl Consumer {
-    pub fn new(size: usize) -> Result<Self, MpscBufError> {
-        let ringbuf = RingBuf::new(size)?;
-        let notification = Notification::new()?;
-        Ok(Consumer {
+    pub fn new(ringbuf: RingBuf, notification: Notification) -> Self {
+        Consumer {
             ringbuf,
             notification,
-        })
+        }
     }
 
     pub fn notification(&self) -> &Notification {
@@ -102,7 +100,6 @@ impl<'a> Iterator for ConsumerIter<'a> {
         loop {
             let cons_pos = self.ringbuf.consumer_pos();
             let prod_pos = self.ringbuf.producer_pos();
-
             if cons_pos >= prod_pos {
                 return None;
             }
@@ -129,10 +126,9 @@ impl<'a> Iterator for ConsumerIter<'a> {
                         record_len,
                     )
                 };
-
-                return Some(Record::new(self.ringbuf, record_data, total_len));
+                return Some(Record::new(self.ringbuf, record_data, cons_pos + total_len));
             } else {
-                self.ringbuf.advance_consumer(total_len);
+                self.ringbuf.advance_consumer(cons_pos + total_len);
             }
         }
     }
@@ -160,7 +156,6 @@ impl<'a> Iterator for BlockingConsumerIter<'a> {
             if let Some(record) = self.iter.next() {
                 return Some(Ok(record));
             }
-
             if let Err(e) = self.notification.wait() {
                 return Some(Err(e));
             }

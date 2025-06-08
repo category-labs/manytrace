@@ -1,42 +1,27 @@
-use crate::{eventfd::Notification, MpscBufError, RecordHeader, RingBuf, HEADER_SIZE};
+use crate::{sync::notification::Notification, MpscBufError, RecordHeader, RingBuf, HEADER_SIZE};
 use std::ops::{Deref, DerefMut};
-use std::os::fd::BorrowedFd;
 
 pub struct Producer {
     ringbuf: RingBuf,
     notification: Notification,
 }
 
-unsafe impl Send for Producer {}
 unsafe impl Sync for Producer {}
 
 impl Producer {
-    pub fn new(
-        memory_fd: BorrowedFd,
-        memory_size: usize,
-        notification_fd: BorrowedFd,
-    ) -> Result<Self, MpscBufError> {
-        let memory_fd_owned = memory_fd
-            .try_clone_to_owned()
-            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
-        let notification_fd_owned = notification_fd.try_clone_to_owned().map_err(|_| {
-            MpscBufError::EventfdCreation("Failed to clone notification fd".to_string())
-        })?;
-
-        let ringbuf = RingBuf::from_fd(memory_fd_owned, memory_size)?;
-        let notification = unsafe { Notification::from_owned_fd(notification_fd_owned) };
-        Ok(Producer {
+    pub fn new(ringbuf: RingBuf, notification: Notification) -> Self {
+        Producer {
             ringbuf,
             notification,
-        })
+        }
     }
 
     pub fn reserve(&self, size: usize) -> Result<ReservedBuffer, MpscBufError> {
         let _guard = self.ringbuf.metadata().spinlock.lock();
 
         let total_size = (size + HEADER_SIZE + 7) & !7;
-        let producer_pos = self.ringbuf.producer_pos();
         let consumer_pos = self.ringbuf.consumer_pos();
+        let producer_pos = self.ringbuf.producer_pos();
         let data_size = self.ringbuf.data_size() as u64;
         if producer_pos - consumer_pos + total_size as u64 > data_size {
             return Err(MpscBufError::InsufficientSpace);
@@ -49,16 +34,16 @@ impl Producer {
             let header = RecordHeader::new(size as u32);
             (ptr as *mut RecordHeader).write(header);
         }
-
-        self.ringbuf.advance_producer(total_size as u64);
+        self.ringbuf
+            .advance_producer(producer_pos + total_size as u64);
 
         let data_ptr = unsafe { ptr.add(HEADER_SIZE) };
         Ok(ReservedBuffer {
             data: unsafe { std::slice::from_raw_parts_mut(data_ptr, size) },
             header: unsafe { &mut *(ptr as *mut RecordHeader) },
             notification: &self.notification,
-            ringbuf: &self.ringbuf,
-            record_pos: offset,
+            // ringbuf: &self.ringbuf,
+            // record_pos: offset,
         })
     }
 }
@@ -67,8 +52,8 @@ pub struct ReservedBuffer<'a> {
     data: &'a mut [u8],
     header: &'a mut RecordHeader,
     notification: &'a Notification,
-    ringbuf: &'a RingBuf,
-    record_pos: u64,
+    // ringbuf: &'a RingBuf,
+    // record_pos: u64,
 }
 
 impl<'a> ReservedBuffer<'a> {
@@ -90,13 +75,13 @@ impl<'a> Drop for ReservedBuffer<'a> {
         if !self.header.is_discarded() {
             self.header.commit();
         }
-        let consumer_pos = self.ringbuf.consumer_pos();
-        let mask = self.ringbuf.size_mask();
-        let consumer_offset = consumer_pos & mask;
-
-        if consumer_offset == self.record_pos {
-            let _ = self.notification.notify();
-        }
+        // let consumer_pos = self.ringbuf.consumer_pos();
+        // let mask = self.ringbuf.size_mask();
+        // let consumer_offset = consumer_pos & mask;
+        // if consumer_offset == self.record_pos {
+        //     let _ = self.notification.notify();
+        // }
+        let _ = self.notification.notify();
     }
 }
 
@@ -125,11 +110,14 @@ mod tests {
     fn producer_and_consumer() -> (Producer, crate::Consumer) {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
         let size = page_size * 2;
-        let consumer = crate::Consumer::new(size).unwrap();
-        let memory_fd = consumer.memory_fd();
-        let memory_size = consumer.memory_size();
-        let notification_fd = consumer.notification_fd();
-        let producer = Producer::new(memory_fd, memory_size, notification_fd).unwrap();
+        let ringbuf1 = RingBuf::new(size).unwrap();
+        let ringbuf2 = RingBuf::from_fd(ringbuf1.clone_fd().unwrap(), size).unwrap();
+        let notification1 = Notification::new().unwrap();
+        let notification2 = unsafe {
+            Notification::from_owned_fd(notification1.fd().try_clone_to_owned().unwrap())
+        };
+        let consumer = crate::Consumer::new(ringbuf1, notification1);
+        let producer = Producer::new(ringbuf2, notification2);
         (producer, consumer)
     }
 
@@ -164,18 +152,15 @@ mod tests {
     #[rstest]
     fn test_explicit_discard(producer: Producer) -> Result<(), MpscBufError> {
         let initial_pos = producer.ringbuf.producer_pos();
-
         {
             let reserved = producer.reserve(16)?;
             reserved.discard();
         }
-
         let total_size = (16 + HEADER_SIZE + 7) & !7;
         assert_eq!(
             producer.ringbuf.producer_pos(),
             initial_pos + total_size as u64
         );
-
         Ok(())
     }
 
@@ -248,14 +233,19 @@ mod tests {
     fn test_multi_threaded_producer_consumer() -> Result<(), MpscBufError> {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
         let size = page_size * 8;
-        let consumer = crate::Consumer::new(size)?;
+        let ringbuf = RingBuf::new(size)?;
+        let notification = Notification::new()?;
 
-        let memory_fd = consumer.memory_fd();
-        let memory_size = consumer.memory_size();
-        let notification_fd = consumer.notification_fd();
+        let ringbuf_clone1 = RingBuf::from_fd(ringbuf.clone_fd().unwrap(), size)?;
+        let ringbuf_clone2 = RingBuf::from_fd(ringbuf.clone_fd().unwrap(), size)?;
+        let notification1 =
+            unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
+        let notification2 =
+            unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
 
-        let producer1 = Producer::new(memory_fd, memory_size, notification_fd)?;
-        let producer2 = Producer::new(memory_fd, memory_size, notification_fd)?;
+        let consumer = crate::Consumer::new(ringbuf, notification);
+        let producer1 = Producer::new(ringbuf_clone1, notification1);
+        let producer2 = Producer::new(ringbuf_clone2, notification2);
 
         let consumer_handle = thread::spawn(move || {
             let mut count = 0;
