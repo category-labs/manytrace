@@ -12,11 +12,12 @@ impl Producer {
     }
 
     pub fn reserve(&self, size: usize) -> Result<ReservedBuffer> {
+        let _guard = self.ringbuf.metadata().spinlock.lock();
+
         let total_size = (size + HEADER_SIZE + 7) & !7;
         let producer_pos = self.ringbuf.producer_pos();
         let consumer_pos = self.ringbuf.consumer_pos();
         let data_size = self.ringbuf.data_size() as u64;
-
         ensure!(
             producer_pos - consumer_pos + total_size as u64 <= data_size,
             MpscBufError::InsufficientSpace
@@ -33,13 +34,9 @@ impl Producer {
         self.ringbuf.advance_producer(total_size as u64);
 
         let data_ptr = unsafe { ptr.add(HEADER_SIZE) };
-        let data_slice = unsafe { std::slice::from_raw_parts_mut(data_ptr, size) };
-
-        let header_ref = unsafe { &mut *(ptr as *mut RecordHeader) };
-
         Ok(ReservedBuffer {
-            data: data_slice,
-            header: header_ref,
+            data: unsafe { std::slice::from_raw_parts_mut(data_ptr, size) },
+            header: unsafe { &mut *(ptr as *mut RecordHeader) },
         })
     }
 }
@@ -65,6 +62,12 @@ impl<'a> ReservedBuffer<'a> {
     }
 }
 
+impl<'a> Drop for ReservedBuffer<'a> {
+    fn drop(&mut self) {
+        self.header.commit();
+    }
+}
+
 impl<'a> Deref for ReservedBuffer<'a> {
     type Target = [u8];
 
@@ -76,12 +79,6 @@ impl<'a> Deref for ReservedBuffer<'a> {
 impl<'a> DerefMut for ReservedBuffer<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.data
-    }
-}
-
-impl<'a> Drop for ReservedBuffer<'a> {
-    fn drop(&mut self) {
-        self.header.commit();
     }
 }
 
@@ -200,13 +197,13 @@ mod tests {
     fn test_insufficient_space(producer: Producer) -> Result<()> {
         let data_size = producer.ringbuf.data_size();
         let large_size = data_size / 2;
-        
+
         // First reservation should succeed
         let _reserved1 = producer.reserve(large_size)?;
-        
+
         // Second reservation should fail due to insufficient space
         assert!(producer.reserve(large_size).is_err());
-        
+
         Ok(())
     }
 }

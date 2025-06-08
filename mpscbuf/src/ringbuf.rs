@@ -18,7 +18,7 @@ impl RingBuf {
         Ok(RingBuf { memory })
     }
     
-    fn metadata(&self) -> &Metadata {
+    pub fn metadata(&self) -> &Metadata {
         unsafe { &*(self.memory.metadata_ptr().as_ptr() as *const Metadata) }
     }
     
@@ -111,5 +111,57 @@ mod tests {
         
         ringbuf.increment_dropped();
         assert_eq!(ringbuf.dropped(), 2);
+    }
+
+    #[rstest]
+    fn test_spinlock_basic(ringbuf: RingBuf) {
+        let metadata = ringbuf.metadata();
+        
+        {
+            let _guard = metadata.spinlock.try_lock();
+            assert!(_guard.is_some());
+        }
+        
+        {
+            let _guard = metadata.spinlock.lock();
+        }
+    }
+
+    #[rstest]
+    fn test_spinlock_contention() {
+        use std::sync::Arc;
+        use std::thread;
+        
+        let ringbuf = Arc::new({
+            let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+            let size = page_size * 2;
+            RingBuf::new(size).unwrap()
+        });
+        
+        let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let ringbuf = Arc::clone(&ringbuf);
+                let counter = Arc::clone(&counter);
+                
+                thread::spawn(move || {
+                    for _ in 0..100 {
+                        let _guard = ringbuf.metadata().spinlock.lock();
+                        
+                        // Critical section
+                        let old = counter.load(std::sync::atomic::Ordering::Relaxed);
+                        std::thread::sleep(std::time::Duration::from_nanos(1));
+                        counter.store(old + 1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 400);
     }
 }

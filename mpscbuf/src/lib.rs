@@ -5,10 +5,12 @@ pub mod producer;
 pub mod ringbuf;
 
 use crossbeam::utils::CachePadded;
+use std::sync::atomic::{AtomicU64, Ordering};
+use spinning_top::Spinlock;
 
 #[repr(C)]
 pub struct Metadata {
-    pub spinlock: CachePadded<AtomicU64>,
+    pub spinlock: CachePadded<Spinlock<()>>,
     pub producer: AtomicU64,
     pub consumer: AtomicU64,
     pub dropped: AtomicU64,
@@ -17,15 +19,13 @@ pub struct Metadata {
 impl Metadata {
     pub fn new() -> Self {
         Metadata {
-            spinlock: CachePadded::new(AtomicU64::new(0)),
+            spinlock: CachePadded::new(Spinlock::new(())),
             producer: AtomicU64::new(0),
             consumer: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
         }
     }
 }
-
-use std::sync::atomic::{AtomicU64, Ordering};
 
 #[repr(C)]
 pub struct RecordHeader {
