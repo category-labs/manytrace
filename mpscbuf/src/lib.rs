@@ -1,3 +1,7 @@
-#![no_std]
+pub mod error;
+pub mod memory;
 
-extern crate alloc;
+pub use error::MpscBufError;
+pub use memory::Memory;
+
+pub use eyre::{Result, WrapErr};

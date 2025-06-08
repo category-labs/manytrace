@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-repository.workspace = true
 
 [dependencies]
+eyre.workspace = true
+libc.workspace = true
+nix.workspace = true
+thiserror.workspace = true
