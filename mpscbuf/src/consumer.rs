@@ -1,4 +1,4 @@
-use crate::{RingBuf, RecordHeader, BUSY_FLAG, DISCARD_FLAG, HEADER_SIZE};
+use crate::{RecordHeader, RingBuf, BUSY_FLAG, DISCARD_FLAG, HEADER_SIZE};
 
 pub struct Record<'a> {
     ringbuf: &'a RingBuf,
@@ -14,7 +14,7 @@ impl<'a> Record<'a> {
             total_len,
         }
     }
-    
+
     pub fn as_slice(&self) -> &[u8] {
         self.data
     }
@@ -34,20 +34,16 @@ impl Consumer {
     pub fn new(ringbuf: RingBuf) -> Self {
         Consumer { ringbuf }
     }
-    
+
     pub fn iter(&self) -> ConsumerIter {
         ConsumerIter::new(&self.ringbuf)
     }
-    
+
     pub fn available_records(&self) -> u64 {
         let prod_pos = self.ringbuf.producer_pos();
         let cons_pos = self.ringbuf.consumer_pos();
-        
-        if prod_pos >= cons_pos {
-            prod_pos - cons_pos
-        } else {
-            0
-        }
+
+        prod_pos.saturating_sub(cons_pos)
     }
 }
 
@@ -72,44 +68,40 @@ impl<'a> ConsumerIter<'a> {
 
 impl<'a> Iterator for ConsumerIter<'a> {
     type Item = Record<'a>;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let cons_pos = self.ringbuf.consumer_pos();
             let prod_pos = self.ringbuf.producer_pos();
-            
+
             if cons_pos >= prod_pos {
                 return None;
             }
-            
+
             let data_ptr = self.ringbuf.data_ptr();
             let mask = self.ringbuf.size_mask();
             let offset = (cons_pos & mask) as usize;
-            
+
             let header_ptr = unsafe { data_ptr.add(offset) as *const RecordHeader };
             let header = unsafe { &*header_ptr };
-            
+
             if header.flags() & BUSY_FLAG != 0 {
                 return None;
             }
-            
+
             let record_len = header.len() as usize;
             let total_len = round_up_to_8(HEADER_SIZE + record_len) as u64;
-            
+
             if header.flags() & DISCARD_FLAG == 0 {
                 let data_offset = offset + HEADER_SIZE;
                 let record_data = unsafe {
                     std::slice::from_raw_parts(
                         data_ptr.add(data_offset & mask as usize),
-                        record_len
+                        record_len,
                     )
                 };
-                
-                return Some(Record::new(
-                    self.ringbuf,
-                    record_data,
-                    total_len,
-                ));
+
+                return Some(Record::new(self.ringbuf, record_data, total_len));
             } else {
                 self.ringbuf.advance_consumer(total_len);
             }

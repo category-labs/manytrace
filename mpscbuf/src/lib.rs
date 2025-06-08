@@ -1,12 +1,12 @@
+pub mod consumer;
 pub mod error;
 pub mod memory;
-pub mod consumer;
 pub mod producer;
 pub mod ringbuf;
 
 use crossbeam::utils::CachePadded;
-use std::sync::atomic::{AtomicU64, Ordering};
 use spinning_top::Spinlock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[repr(C)]
 pub struct Metadata {
@@ -18,6 +18,12 @@ pub struct Metadata {
 
 impl Metadata {
     pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for Metadata {
+    fn default() -> Self {
         Metadata {
             spinlock: CachePadded::new(Spinlock::new(())),
             producer: AtomicU64::new(0),
@@ -64,15 +70,19 @@ impl RecordHeader {
         current as u32
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn flags(&self) -> u32 {
         let current = self.header.load(Ordering::Acquire);
         (current >> 32) as u32
     }
 }
 
+pub use consumer::{Consumer, ConsumerIter, Record};
 pub use error::MpscBufError;
 pub use memory::Memory;
-pub use consumer::{Record, Consumer, ConsumerIter};
 pub use producer::{Producer, ReservedBuffer};
 pub use ringbuf::RingBuf;
 

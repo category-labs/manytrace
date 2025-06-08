@@ -134,7 +134,7 @@ mod tests {
         let memory = Memory::new(size)?;
 
         let ptr = memory.as_ptr().as_ptr();
-        
+
         unsafe {
             for i in 0..size {
                 let byte_value = (i % 256) as u8;
@@ -145,9 +145,14 @@ mod tests {
                 let expected = (i % 256) as u8;
                 let actual = ptr.add(i).read();
                 assert_eq!(actual, expected, "mismatch at position {}", i);
-                
+
                 let wrapped_actual = ptr.add(i + size).read();
-                assert_eq!(wrapped_actual, expected, "mismatch at wrapped position {}", i + size);
+                assert_eq!(
+                    wrapped_actual,
+                    expected,
+                    "mismatch at wrapped position {}",
+                    i + size
+                );
             }
         }
 
@@ -162,7 +167,7 @@ mod tests {
 
         let ptr = memory.as_ptr().as_ptr();
         let pattern = b"ABCDEFGH";
-        
+
         unsafe {
             let start_pos = size - pattern.len() / 2;
             for (i, &byte) in pattern.iter().enumerate() {
@@ -191,17 +196,17 @@ mod tests {
 
         assert_eq!(memory.metadata_ptr(), memory.as_ptr());
         assert_eq!(memory.data_size(), size - page_size);
-        
+
         unsafe {
             let metadata_ptr = memory.metadata_ptr().as_ptr();
             let data_ptr = memory.data_ptr().as_ptr();
-            
+
             metadata_ptr.write(0xAA);
             data_ptr.write(0xBB);
-            
+
             assert_eq!(metadata_ptr.read(), 0xAA);
             assert_eq!(data_ptr.read(), 0xBB);
-            assert_eq!(metadata_ptr.offset_from(data_ptr).abs() as usize, page_size);
+            assert_eq!(metadata_ptr.offset_from(data_ptr).unsigned_abs(), page_size);
         }
 
         Ok(())
