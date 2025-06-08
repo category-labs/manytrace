@@ -137,6 +137,7 @@ impl<'a> Iterator for ConsumerIter<'a> {
 pub struct BlockingConsumerIter<'a> {
     iter: ConsumerIter<'a>,
     notification: &'a Notification,
+    got_data: bool,
 }
 
 impl<'a> BlockingConsumerIter<'a> {
@@ -144,6 +145,7 @@ impl<'a> BlockingConsumerIter<'a> {
         BlockingConsumerIter {
             iter: ConsumerIter::new(ringbuf),
             notification,
+            got_data: false,
         }
     }
 }
@@ -153,12 +155,16 @@ impl<'a> Iterator for BlockingConsumerIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
+            if !self.got_data {
+                if let Err(e) = self.notification.wait() {
+                    return Some(Err(e));
+                }
+            }
             if let Some(record) = self.iter.next() {
+                self.got_data = true;
                 return Some(Ok(record));
             }
-            if let Err(e) = self.notification.wait() {
-                return Some(Err(e));
-            }
+            self.got_data = false;
         }
     }
 }

@@ -93,7 +93,7 @@ impl RecordHeader {
 pub use consumer::{Consumer, ConsumerIter, Record};
 pub use error::MpscBufError;
 pub use memory::Memory;
-pub use producer::{Producer, ReservedBuffer};
+pub use producer::{Producer, ReservedBuffer, WakeupStrategy};
 pub use ringbuf::RingBuf;
 pub use sync::notification::Notification;
 
@@ -130,7 +130,11 @@ mod loom_tests {
                 let ringbuf_clone =
                     RingBuf::from_fd(ringbuf_clone.clone_fd().unwrap(), size).unwrap();
                 let notification_clone = notification.clone();
-                let producer = Producer::new(ringbuf_clone, notification_clone);
+                let producer = Producer::with_wakeup_strategy(
+                    ringbuf_clone,
+                    notification_clone,
+                    WakeupStrategy::Forced,
+                );
 
                 let handle = thread::spawn(move || {
                     for i in 0..msgs_per_producer {
@@ -198,7 +202,8 @@ mod loom_tests {
             let notification = Notification::new().unwrap();
 
             let consumer = Consumer::new(ringbuf, notification.clone());
-            let producer = Producer::new(ringbuf_clone, notification);
+            let producer =
+                Producer::with_wakeup_strategy(ringbuf_clone, notification, WakeupStrategy::Forced);
 
             let num_messages = 3;
 

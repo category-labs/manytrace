@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["loom"]
+default = []
 loom = ["dep:loom"]
 
 [dependencies]

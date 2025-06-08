@@ -1,18 +1,36 @@
 use crate::{sync::notification::Notification, MpscBufError, RecordHeader, RingBuf, HEADER_SIZE};
 use std::ops::{Deref, DerefMut};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeupStrategy {
+    /// Only wake up when consumer is waiting at exactly this record position
+    SelfPacing,
+    /// Always wake up consumer on commit
+    Forced,
+}
+
 pub struct Producer {
     ringbuf: RingBuf,
     notification: Notification,
+    wakeup_strategy: WakeupStrategy,
 }
 
 unsafe impl Sync for Producer {}
 
 impl Producer {
     pub fn new(ringbuf: RingBuf, notification: Notification) -> Self {
+        Self::with_wakeup_strategy(ringbuf, notification, WakeupStrategy::SelfPacing)
+    }
+
+    pub fn with_wakeup_strategy(
+        ringbuf: RingBuf,
+        notification: Notification,
+        wakeup_strategy: WakeupStrategy,
+    ) -> Self {
         Producer {
             ringbuf,
             notification,
+            wakeup_strategy,
         }
     }
 
@@ -42,8 +60,9 @@ impl Producer {
             data: unsafe { std::slice::from_raw_parts_mut(data_ptr, size) },
             header: unsafe { &mut *(ptr as *mut RecordHeader) },
             notification: &self.notification,
-            // ringbuf: &self.ringbuf,
-            // record_pos: offset,
+            ringbuf: &self.ringbuf,
+            record_pos: offset,
+            wakeup_strategy: self.wakeup_strategy,
         })
     }
 }
@@ -52,8 +71,9 @@ pub struct ReservedBuffer<'a> {
     data: &'a mut [u8],
     header: &'a mut RecordHeader,
     notification: &'a Notification,
-    // ringbuf: &'a RingBuf,
-    // record_pos: u64,
+    ringbuf: &'a RingBuf,
+    record_pos: u64,
+    wakeup_strategy: WakeupStrategy,
 }
 
 impl<'a> ReservedBuffer<'a> {
@@ -75,13 +95,20 @@ impl<'a> Drop for ReservedBuffer<'a> {
         if !self.header.is_discarded() {
             self.header.commit();
         }
-        // let consumer_pos = self.ringbuf.consumer_pos();
-        // let mask = self.ringbuf.size_mask();
-        // let consumer_offset = consumer_pos & mask;
-        // if consumer_offset == self.record_pos {
-        //     let _ = self.notification.notify();
-        // }
-        let _ = self.notification.notify();
+
+        match self.wakeup_strategy {
+            WakeupStrategy::Forced => {
+                let _ = self.notification.notify();
+            }
+            WakeupStrategy::SelfPacing => {
+                let consumer_pos = self.ringbuf.consumer_pos();
+                let mask = self.ringbuf.size_mask();
+                let consumer_offset = consumer_pos & mask;
+                if consumer_offset == self.record_pos {
+                    let _ = self.notification.notify();
+                }
+            }
+        }
     }
 }
 
@@ -117,7 +144,8 @@ mod tests {
             Notification::from_owned_fd(notification1.fd().try_clone_to_owned().unwrap())
         };
         let consumer = crate::Consumer::new(ringbuf1, notification1);
-        let producer = Producer::new(ringbuf2, notification2);
+        let producer =
+            Producer::with_wakeup_strategy(ringbuf2, notification2, WakeupStrategy::Forced);
         (producer, consumer)
     }
 
@@ -244,30 +272,16 @@ mod tests {
             unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
 
         let consumer = crate::Consumer::new(ringbuf, notification);
-        let producer1 = Producer::new(ringbuf_clone1, notification1);
-        let producer2 = Producer::new(ringbuf_clone2, notification2);
-
-        let consumer_handle = thread::spawn(move || {
-            let mut count = 0;
-            let mut messages = Vec::new();
-
-            for record_result in consumer.blocking_iter() {
-                match record_result {
-                    Ok(record) => {
-                        let data = String::from_utf8_lossy(record.as_slice());
-                        messages.push(data.to_string());
-                        count += 1;
-                        if count >= 20 {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            messages
-        });
-
-        thread::sleep(Duration::from_millis(10));
+        let producer1 = Producer::with_wakeup_strategy(
+            ringbuf_clone1,
+            notification1,
+            WakeupStrategy::SelfPacing,
+        );
+        let producer2 = Producer::with_wakeup_strategy(
+            ringbuf_clone2,
+            notification2,
+            WakeupStrategy::SelfPacing,
+        );
 
         let handle1 = {
             thread::spawn(move || {
@@ -290,6 +304,26 @@ mod tests {
                 }
             })
         };
+        thread::sleep(Duration::from_millis(1));
+        let consumer_handle = thread::spawn(move || {
+            let mut count = 0;
+            let mut messages = Vec::new();
+
+            for record_result in consumer.blocking_iter() {
+                match record_result {
+                    Ok(record) => {
+                        let data = String::from_utf8_lossy(record.as_slice());
+                        messages.push(data.to_string());
+                        count += 1;
+                        if count >= 20 {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            messages
+        });
 
         handle1.join().expect("Thread 1 panicked");
         handle2.join().expect("Thread 2 panicked");
