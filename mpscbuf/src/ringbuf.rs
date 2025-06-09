@@ -58,11 +58,11 @@ impl RingBuf {
         self.metadata().consumer.store(amount, Ordering::Release);
     }
 
-    pub(crate) fn increment_dropped(&self) {
+    pub fn increment_dropped(&self) {
         self.metadata().dropped.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn dropped(&self) -> u64 {
+    pub fn dropped(&self) -> u64 {
         self.metadata().dropped.load(Ordering::Relaxed)
     }
 

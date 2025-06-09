@@ -3,8 +3,7 @@ use governor::clock::DefaultClock;
 use governor::middleware::NoOpMiddleware;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
-use mpscbuf::sync::notification::Notification;
-use mpscbuf::{Producer, RingBuf, WakeupStrategy};
+use mpscbuf::{create_producer, WakeupStrategy};
 use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd, OwnedFd};
@@ -120,10 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let wakeup_strategy = args.wakeup_strategy;
 
-    let ringbuf = RingBuf::from_fd(memory_fd, memory_size)?;
-    let notification = unsafe { Notification::from_owned_fd(notification_fd) };
-
-    let producer = Producer::with_wakeup_strategy(ringbuf, notification, wakeup_strategy);
+    let producer = create_producer(memory_fd, notification_fd, memory_size, wakeup_strategy)?;
 
     info!(
         producer_id = args.id,

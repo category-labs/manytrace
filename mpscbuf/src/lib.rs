@@ -76,11 +76,6 @@ impl RecordHeader {
         let flags = (current >> 32) as u32;
         (len, flags)
     }
-
-    pub(crate) fn write_initial(&self, len: u32) {
-        let header_value = (len as u64) | ((BUSY_FLAG as u64) << 32);
-        self.header.store(header_value, Ordering::Release);
-    }
 }
 
 // Public API - these are what users should use
@@ -95,6 +90,73 @@ pub use eyre::Result;
 
 // Internal types - still exposed for now but marked as implementation details
 pub use consumer::ConsumerIter;
+
+/// Create a new consumer with the specified buffer size.
+///
+/// This is the recommended way to create a consumer. The buffer size should be
+/// a power of two and at least twice the page size.
+///
+/// # Example
+/// ```rust
+/// use mpscbuf::create_consumer;
+///
+/// let consumer = create_consumer(1024 * 1024)?;  // 1MB buffer
+/// # Ok::<(), mpscbuf::MpscBufError>(())
+/// ```
+pub fn create_consumer(data_size: usize) -> Result<Consumer, MpscBufError> {
+    let ringbuf = RingBuf::new(data_size)?;
+    let notification = Notification::new()?;
+    Ok(Consumer::new(ringbuf, notification))
+}
+
+/// Create a producer from file descriptors (typically for cross-process usage).
+///
+/// This function validates that the file descriptors are still open and usable
+/// before creating the producer.
+///
+/// # Arguments
+/// * `memory_fd` - File descriptor for the shared memory
+/// * `notification_fd` - File descriptor for the notification mechanism  
+/// * `data_size` - Size of the ring buffer data area
+/// * `wakeup_strategy` - Strategy for notifying the consumer
+///
+/// # Errors
+/// Returns an error if either file descriptor is closed or invalid.
+///
+/// # Example
+/// ```rust,no_run
+/// use mpscbuf::{create_producer, WakeupStrategy};
+/// use std::os::fd::OwnedFd;
+///
+/// # let memory_fd: OwnedFd = unimplemented!();
+/// # let notification_fd: OwnedFd = unimplemented!();
+/// let producer = create_producer(memory_fd, notification_fd, 1024 * 1024, WakeupStrategy::Forced)?;
+/// # Ok::<(), mpscbuf::MpscBufError>(())
+/// ```
+pub fn create_producer(
+    memory_fd: std::os::fd::OwnedFd,
+    notification_fd: std::os::fd::OwnedFd,
+    data_size: usize,
+    wakeup_strategy: WakeupStrategy,
+) -> Result<Producer, MpscBufError> {
+    use std::os::fd::AsFd;
+
+    // Validate that the file descriptors are still open by checking if we can get metadata
+    // This will fail if the FD is closed or invalid
+    nix::sys::stat::fstat(&memory_fd)
+        .map_err(|errno| MpscBufError::IoError(std::io::Error::from_raw_os_error(errno as i32)))?;
+    nix::sys::stat::fstat(&notification_fd)
+        .map_err(|errno| MpscBufError::IoError(std::io::Error::from_raw_os_error(errno as i32)))?;
+
+    let ringbuf = RingBuf::from_fd(memory_fd, data_size)?;
+    let notification = unsafe { Notification::from_owned_fd(notification_fd) };
+
+    Ok(Producer::with_wakeup_strategy(
+        ringbuf,
+        notification,
+        wakeup_strategy,
+    ))
+}
 
 #[cfg(all(test, feature = "loom"))]
 mod loom_tests {

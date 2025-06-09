@@ -9,7 +9,6 @@ use std::os::unix::io::AsFd;
 
 pub(crate) struct Memory {
     ptr: NonNull<u8>,
-    size: usize,
     data_size: usize,
     page_size: usize,
     fd: std::os::fd::OwnedFd,
@@ -91,7 +90,6 @@ impl Memory {
 
         let memory = Memory {
             ptr,
-            size: total_size,
             data_size,
             page_size,
             fd,
@@ -99,16 +97,9 @@ impl Memory {
         Ok(memory)
     }
 
-    pub(crate) fn as_ptr(&self) -> NonNull<u8> {
+    #[cfg(test)]
+    fn as_ptr(&self) -> NonNull<u8> {
         self.ptr
-    }
-
-    pub(crate) fn size(&self) -> usize {
-        self.size
-    }
-
-    pub(crate) fn page_size(&self) -> usize {
-        self.page_size
     }
 
     pub(crate) fn metadata_ptr(&self) -> NonNull<u8> {
@@ -121,10 +112,6 @@ impl Memory {
 
     pub(crate) fn data_size(&self) -> usize {
         self.data_size
-    }
-
-    pub(crate) fn size_mask(&self) -> usize {
-        self.data_size() - 1
     }
 
     pub(crate) fn fd(&self) -> &std::os::fd::OwnedFd {

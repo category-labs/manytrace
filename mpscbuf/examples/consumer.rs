@@ -1,7 +1,6 @@
 use clap::Parser;
 use hdrhistogram::Histogram;
-use mpscbuf::sync::notification::Notification;
-use mpscbuf::{Consumer, RingBuf};
+use mpscbuf::create_consumer;
 use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
 use std::collections::HashMap;
 use std::os::fd::AsFd;
@@ -95,11 +94,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "creating ring buffer"
     );
 
-    let ringbuf = RingBuf::new(buffer_size)?;
-    let notification = Notification::new()?;
+    let consumer = create_consumer(buffer_size)?;
 
-    let memory_fd = ringbuf.clone_fd()?;
-    let notification_fd = notification.fd().try_clone_to_owned()?;
+    let memory_fd = consumer.memory_fd().try_clone_to_owned()?;
+    let notification_fd = consumer.notification_fd().try_clone_to_owned()?;
 
     info!(
         producer_count = args.producer_ids.len(),
@@ -111,11 +109,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             producer_id,
             &memory_fd,
             &notification_fd,
-            buffer_size,
+            consumer.memory_size(),
         )?;
     }
-
-    let consumer = Consumer::new(ringbuf, notification);
 
     let histogram = Arc::new(Mutex::new(Histogram::<u64>::new(3)?));
     let per_producer_counts = Arc::new(Mutex::new(HashMap::<u32, u64>::new()));

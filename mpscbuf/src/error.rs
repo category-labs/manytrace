@@ -28,4 +28,7 @@ pub enum MpscBufError {
 
     #[error("eventfd read failed: {0}")]
     EventfdRead(String),
+
+    #[error("I/O error: {0}")]
+    IoError(#[from] std::io::Error),
 }

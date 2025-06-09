@@ -43,18 +43,6 @@ impl<T> Spinlock<T> {
         }
         SpinlockGuard { spinlock: self }
     }
-
-    pub(crate) fn try_lock(&self) -> Option<SpinlockGuard<T>> {
-        if self
-            .lock
-            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-        {
-            Some(SpinlockGuard { spinlock: self })
-        } else {
-            None
-        }
-    }
 }
 
 #[cfg(not(feature = "loom"))]
