@@ -3,6 +3,9 @@ use crate::{
     HEADER_SIZE,
 };
 
+#[cfg(feature = "tracing")]
+use tracing::trace;
+
 pub struct Record<'a> {
     ringbuf: &'a RingBuf,
     data: &'a [u8],
@@ -63,7 +66,15 @@ impl Consumer {
     }
 
     pub fn wait(&self) -> Result<(), MpscBufError> {
-        self.notification.wait()
+        #[cfg(feature = "tracing")]
+        trace!("consumer wait start");
+        
+        let result = self.notification.wait();
+        
+        #[cfg(feature = "tracing")]
+        trace!(success = result.is_ok(), "consumer wait end");
+        
+        result
     }
 
     pub fn available_records(&self) -> u64 {
@@ -100,6 +111,14 @@ impl<'a> Iterator for ConsumerIter<'a> {
         loop {
             let cons_pos = self.ringbuf.consumer_pos();
             let prod_pos = self.ringbuf.producer_pos();
+            
+            #[cfg(feature = "tracing")]
+            trace!(
+                cons_pos = cons_pos,
+                prod_pos = prod_pos,
+                "consumer iter next attempt"
+            );
+            
             if cons_pos >= prod_pos {
                 return None;
             }
@@ -112,6 +131,18 @@ impl<'a> Iterator for ConsumerIter<'a> {
 
             let header = unsafe { &*header_ptr };
             let (record_len_u32, flags) = header.len_and_flags();
+            
+            #[cfg(feature = "tracing")]
+            trace!(
+                cons_pos = cons_pos,
+                offset = offset,
+                record_len = record_len_u32,
+                flags = flags,
+                busy = flags & BUSY_FLAG,
+                discard = flags & DISCARD_FLAG,
+                "consumer record header read"
+            );
+            
             if flags & BUSY_FLAG != 0 {
                 return None;
             }
@@ -123,8 +154,24 @@ impl<'a> Iterator for ConsumerIter<'a> {
                 let data_offset = offset + HEADER_SIZE;
                 let record_data =
                     unsafe { std::slice::from_raw_parts(data_ptr.add(data_offset), record_len) };
+                
+                #[cfg(feature = "tracing")]
+                trace!(
+                    cons_pos = cons_pos,
+                    new_cons_pos = cons_pos + total_len,
+                    record_len = record_len,
+                    "consumer record consumed"
+                );
+                
                 return Some(Record::new(self.ringbuf, record_data, cons_pos + total_len));
             } else {
+                #[cfg(feature = "tracing")]
+                trace!(
+                    cons_pos = cons_pos,
+                    new_cons_pos = cons_pos + total_len,
+                    "consumer record discarded"
+                );
+                
                 self.ringbuf.advance_consumer(cons_pos + total_len);
             }
         }

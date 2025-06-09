@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = []
 loom = ["dep:loom"]
+tracing = ["dep:tracing"]
 
 [dependencies]
 crossbeam.workspace = true
@@ -16,6 +17,7 @@ libc.workspace = true
 nix.workspace = true
 thiserror.workspace = true
 loom = { version = "0.7.2", optional = true }
+tracing = { workspace = true, optional = true }
 
 [[bench]]
 name = "ringbuf"
