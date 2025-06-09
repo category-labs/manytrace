@@ -33,6 +33,18 @@ struct Args {
 
     #[clap(short, long, default_value_t = 1000)]
     print_interval: u64,
+
+    #[clap(short, long, default_value = "forced")]
+    wakeup_strategy: String,
+}
+
+fn parse_wakeup_strategy(strategy: &str) -> Result<WakeupStrategy, String> {
+    match strategy.to_lowercase().as_str() {
+        "forced" => Ok(WakeupStrategy::Forced),
+        "self-pacing" | "selfpacing" => Ok(WakeupStrategy::SelfPacing),
+        "no-wakeup" | "nowakeup" => Ok(WakeupStrategy::NoWakeup),
+        _ => Err(format!("Invalid wakeup strategy: {}. Valid options: forced, self-pacing, no-wakeup", strategy)),
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -103,10 +115,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "received connection info"
     );
 
+    let wakeup_strategy = parse_wakeup_strategy(&args.wakeup_strategy)
+        .map_err(|e| format!("Invalid wakeup strategy: {}", e))?;
+
     let ringbuf = RingBuf::from_fd(memory_fd, memory_size)?;
     let notification = unsafe { Notification::from_owned_fd(notification_fd) };
 
-    let producer = Producer::with_wakeup_strategy(ringbuf, notification, WakeupStrategy::Forced);
+    let producer = Producer::with_wakeup_strategy(ringbuf, notification, wakeup_strategy);
+
+    info!(
+        producer_id = args.id,
+        wakeup_strategy = ?wakeup_strategy,
+        "producer configured with wakeup strategy"
+    );
 
     let messages_per_second = NonZeroU32::new(args.rate).unwrap();
     let quota = Quota::per_second(messages_per_second);
@@ -147,6 +168,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match producer.reserve(message_data.len()) {
             Ok(mut reserved) => {
                 reserved.copy_from_slice(&message_data);
+                drop(reserved);
+                
+                if matches!(wakeup_strategy, WakeupStrategy::NoWakeup) {
+                    let _ = producer.notify();
+                }
+                
                 sequence += 1;
 
                 debug!(
