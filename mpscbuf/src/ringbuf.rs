@@ -1,13 +1,13 @@
-use crate::{memory::Memory, sync::Ordering, Metadata, MpscBufError};
+use crate::{common::Metadata, memory::Memory, sync::Ordering, MpscBufError};
 use eyre::Result;
-use std::{os::fd::AsFd, sync::atomic::fence};
+use std::os::fd::AsFd;
 
-pub struct RingBuf {
+pub(crate) struct RingBuf {
     memory: Memory,
 }
 
 impl RingBuf {
-    pub fn new(data_size: usize) -> Result<Self, MpscBufError> {
+    pub(crate) fn new(data_size: usize) -> Result<Self, MpscBufError> {
         let memory = Memory::new(data_size)
             .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
 
@@ -15,14 +15,12 @@ impl RingBuf {
         unsafe {
             metadata_ptr.write(Metadata::new());
         }
-        fence(Ordering::Release);
         Ok(RingBuf { memory })
     }
 
     pub fn from_fd(fd: std::os::fd::OwnedFd, data_size: usize) -> Result<Self, MpscBufError> {
         let memory = Memory::from_fd(fd, data_size)
             .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
-        fence(Ordering::Acquire);
         Ok(RingBuf { memory })
     }
 
@@ -66,7 +64,8 @@ impl RingBuf {
         self.metadata().dropped.load(Ordering::Relaxed)
     }
 
-    pub fn clone_fd(&self) -> Result<std::os::fd::OwnedFd, MpscBufError> {
+    #[cfg(test)]
+    pub(crate) fn clone_fd(&self) -> Result<std::os::fd::OwnedFd, MpscBufError> {
         self.memory
             .clone_fd()
             .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))

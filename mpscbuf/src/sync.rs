@@ -84,10 +84,6 @@ impl<T> Spinlock<T> {
     pub(crate) fn lock(&self) -> impl std::ops::Deref<Target = T> + '_ {
         self.inner.lock().unwrap()
     }
-
-    pub(crate) fn try_lock(&self) -> Option<impl std::ops::Deref<Target = T> + '_> {
-        self.inner.try_lock().ok()
-    }
 }
 
 #[cfg(not(feature = "loom"))]
@@ -99,12 +95,12 @@ pub mod notification {
         unix::io::OwnedFd,
     };
 
-    pub struct Notification {
+    pub(crate) struct Notification {
         eventfd: EventFd,
     }
 
     impl Notification {
-        pub fn new() -> Result<Self, MpscBufError> {
+        pub(crate) fn new() -> Result<Self, MpscBufError> {
             let eventfd = EventFd::from_value_and_flags(0, EfdFlags::EFD_CLOEXEC)
                 .map_err(|e| MpscBufError::EventfdCreation(e.to_string()))?;
 
@@ -115,7 +111,7 @@ pub mod notification {
         ///
         /// The caller must ensure that `fd` is a valid eventfd file descriptor.
         /// The file descriptor will be owned by this Notification instance.
-        pub unsafe fn from_owned_fd(fd: OwnedFd) -> Self {
+        pub(crate) unsafe fn from_owned_fd(fd: OwnedFd) -> Self {
             let eventfd = EventFd::from_owned_fd(fd);
             Notification { eventfd }
         }

@@ -5,7 +5,6 @@ use nix::sys::memfd::{memfd_create, MFdFlags};
 use nix::sys::mman::{mmap, mmap_anonymous, munmap, MapFlags, ProtFlags};
 use nix::unistd::ftruncate;
 use std::num::NonZero;
-use std::os::unix::io::AsFd;
 
 pub(crate) struct Memory {
     ptr: NonNull<u8>,
@@ -118,7 +117,9 @@ impl Memory {
         &self.fd
     }
 
+    #[cfg(test)]
     pub(crate) fn clone_fd(&self) -> Result<std::os::fd::OwnedFd> {
+        use std::os::unix::io::AsFd;
         self.fd
             .as_fd()
             .try_clone_to_owned()

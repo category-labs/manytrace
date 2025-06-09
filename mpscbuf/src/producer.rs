@@ -1,13 +1,15 @@
 use crate::{
-    consumer::round_up_to_8, sync::notification::Notification, MpscBufError, RecordHeader, RingBuf,
-    HEADER_SIZE,
+    common::{RecordHeader, HEADER_SIZE},
+    consumer::round_up_to_8,
+    ringbuf::RingBuf,
+    sync::notification::Notification,
+    MpscBufError,
 };
 use std::ops::{Deref, DerefMut};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeupStrategy {
-    SelfPacing,
     Forced,
     NoWakeup,
 }
@@ -21,11 +23,39 @@ pub struct Producer {
 unsafe impl Sync for Producer {}
 
 impl Producer {
-    pub fn new(ringbuf: RingBuf, notification: Notification) -> Self {
-        Self::with_wakeup_strategy(ringbuf, notification, WakeupStrategy::SelfPacing)
+    /// Create a producer from file descriptors (typically for cross-process usage).
+    ///
+    /// This function validates that the file descriptors are still open and usable
+    /// before creating the producer.
+    ///
+    /// # Arguments
+    /// * `memory_fd` - File descriptor for the shared memory
+    /// * `notification_fd` - File descriptor for the notification mechanism  
+    /// * `data_size` - Size of the ring buffer data area
+    /// * `wakeup_strategy` - Strategy for notifying the consumer
+    ///
+    /// # Errors
+    /// Returns an error if either file descriptor is closed or invalid.
+    pub fn new(
+        memory_fd: std::os::fd::OwnedFd,
+        notification_fd: std::os::fd::OwnedFd,
+        data_size: usize,
+        wakeup_strategy: WakeupStrategy,
+    ) -> Result<Producer, MpscBufError> {
+        nix::sys::stat::fstat(&memory_fd).map_err(|errno| {
+            MpscBufError::IoError(std::io::Error::from_raw_os_error(errno as i32))
+        })?;
+        nix::sys::stat::fstat(&notification_fd).map_err(|errno| {
+            MpscBufError::IoError(std::io::Error::from_raw_os_error(errno as i32))
+        })?;
+
+        let ringbuf = RingBuf::from_fd(memory_fd, data_size)?;
+        let notification = unsafe { Notification::from_owned_fd(notification_fd) };
+
+        Ok(Producer::from_parts(ringbuf, notification, wakeup_strategy))
     }
 
-    pub fn with_wakeup_strategy(
+    pub(crate) fn from_parts(
         ringbuf: RingBuf,
         notification: Notification,
         wakeup_strategy: WakeupStrategy,
@@ -91,12 +121,23 @@ impl Producer {
             data: unsafe { std::slice::from_raw_parts_mut(data_ptr, size) },
             header: unsafe { &mut *(ptr as *mut RecordHeader) },
             notification: &self.notification,
-            ringbuf: &self.ringbuf,
             record_pos: offset,
             wakeup_strategy: self.wakeup_strategy,
         })
     }
 
+    /// Increment the dropped record counter.
+    ///
+    /// This should be called when a record is intentionally dropped due to
+    /// insufficient space or other conditions.
+    pub fn increment_dropped(&self) {
+        self.ringbuf.increment_dropped()
+    }
+
+    /// Manually notify the consumer.
+    ///
+    /// This can be used with `WakeupStrategy::NoWakeup` to control when
+    /// the consumer is notified.
     pub fn notify(&self) -> Result<(), MpscBufError> {
         self.notification.notify()
     }
@@ -106,7 +147,6 @@ pub struct ReservedBuffer<'a> {
     data: &'a mut [u8],
     header: &'a mut RecordHeader,
     notification: &'a Notification,
-    ringbuf: &'a RingBuf,
     record_pos: u64,
     wakeup_strategy: WakeupStrategy,
 }
@@ -142,14 +182,6 @@ impl<'a> Drop for ReservedBuffer<'a> {
         match self.wakeup_strategy {
             WakeupStrategy::Forced => {
                 let _ = self.notification.notify();
-            }
-            WakeupStrategy::SelfPacing => {
-                let consumer_pos = self.ringbuf.consumer_pos();
-                let mask = self.ringbuf.size_mask();
-                let consumer_offset = consumer_pos & mask;
-                if consumer_offset == self.record_pos {
-                    let _ = self.notification.notify();
-                }
             }
             WakeupStrategy::NoWakeup => {}
         }
@@ -187,9 +219,8 @@ mod tests {
         let notification2 = unsafe {
             Notification::from_owned_fd(notification1.fd().try_clone_to_owned().unwrap())
         };
-        let consumer = crate::Consumer::new(ringbuf1, notification1);
-        let producer =
-            Producer::with_wakeup_strategy(ringbuf2, notification2, WakeupStrategy::Forced);
+        let consumer = crate::Consumer::from_parts(ringbuf1, notification1);
+        let producer = Producer::from_parts(ringbuf2, notification2, WakeupStrategy::Forced);
         (producer, consumer)
     }
 
@@ -310,9 +341,8 @@ mod tests {
         let notification_consumer =
             unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
 
-        let consumer = crate::Consumer::new(ringbuf_consumer, notification_consumer);
-        let producer =
-            Producer::with_wakeup_strategy(ringbuf, notification, WakeupStrategy::Forced);
+        let consumer = crate::Consumer::from_parts(ringbuf_consumer, notification_consumer);
+        let producer = Producer::from_parts(ringbuf, notification, WakeupStrategy::Forced);
 
         let _data_size = size - page_size;
         let message_size = 256;
@@ -383,9 +413,8 @@ mod tests {
         let notification_consumer =
             unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
 
-        let consumer = crate::Consumer::new(ringbuf_consumer, notification_consumer);
-        let producer =
-            Producer::with_wakeup_strategy(ringbuf, notification, WakeupStrategy::Forced);
+        let consumer = crate::Consumer::from_parts(ringbuf_consumer, notification_consumer);
+        let producer = Producer::from_parts(ringbuf, notification, WakeupStrategy::Forced);
 
         let num_messages = 10;
         let producer_handle = thread::spawn(move || {
@@ -429,11 +458,9 @@ mod tests {
         let notification2 =
             unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
 
-        let consumer = crate::Consumer::new(ringbuf, notification);
-        let producer1 =
-            Producer::with_wakeup_strategy(ringbuf_clone1, notification1, WakeupStrategy::Forced);
-        let producer2 =
-            Producer::with_wakeup_strategy(ringbuf_clone2, notification2, WakeupStrategy::Forced);
+        let consumer = crate::Consumer::from_parts(ringbuf, notification);
+        let producer1 = Producer::from_parts(ringbuf_clone1, notification1, WakeupStrategy::Forced);
+        let producer2 = Producer::from_parts(ringbuf_clone2, notification2, WakeupStrategy::Forced);
 
         let num_messages = 10000;
         let handle1 = thread::spawn(move || {
@@ -479,7 +506,7 @@ mod tests {
         producer_and_consumer: (Producer, crate::Consumer),
     ) -> Result<(), MpscBufError> {
         let (producer, consumer) = producer_and_consumer;
-        let producer = Producer::with_wakeup_strategy(
+        let producer = Producer::from_parts(
             producer.ringbuf,
             producer.notification,
             WakeupStrategy::NoWakeup,

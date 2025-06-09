@@ -1,6 +1,8 @@
 use crate::{
-    sync::notification::Notification, MpscBufError, RecordHeader, RingBuf, BUSY_FLAG, DISCARD_FLAG,
-    HEADER_SIZE,
+    common::{RecordHeader, BUSY_FLAG, DISCARD_FLAG, HEADER_SIZE},
+    ringbuf::RingBuf,
+    sync::notification::Notification,
+    MpscBufError,
 };
 use tracing::trace;
 
@@ -36,15 +38,21 @@ pub struct Consumer {
 }
 
 impl Consumer {
-    pub fn new(ringbuf: RingBuf, notification: Notification) -> Self {
+    /// Create a new consumer with the specified buffer size.
+    ///
+    /// This is the recommended way to create a consumer. The buffer size should be
+    /// a power of two and at least one page size (typically 4096 bytes).
+    pub fn new(data_size: usize) -> Result<Self, MpscBufError> {
+        let ringbuf = RingBuf::new(data_size)?;
+        let notification = Notification::new()?;
+        Ok(Consumer::from_parts(ringbuf, notification))
+    }
+
+    pub(crate) fn from_parts(ringbuf: RingBuf, notification: Notification) -> Self {
         Consumer {
             ringbuf,
             notification,
         }
-    }
-
-    pub fn notification(&self) -> &Notification {
-        &self.notification
     }
 
     pub fn notification_fd(&self) -> std::os::fd::BorrowedFd {
@@ -78,6 +86,14 @@ impl Consumer {
         let cons_pos = self.ringbuf.consumer_pos();
 
         prod_pos.saturating_sub(cons_pos)
+    }
+
+    /// Get the total number of dropped records.
+    ///
+    /// This counter tracks records that were intentionally dropped by producers
+    /// due to insufficient space or other conditions.
+    pub fn dropped(&self) -> u64 {
+        self.ringbuf.dropped()
     }
 }
 

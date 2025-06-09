@@ -1,20 +1,18 @@
-use mpscbuf::{Consumer, Notification, Producer, RingBuf, WakeupStrategy};
+use mpscbuf::{Consumer, Producer, WakeupStrategy};
 
 fn main() {
     divan::main();
 }
 
-const BUFFER_SIZE: usize = 8 * 1024 * 1024;
+const BUFFER_SIZE: usize = 2 * 1024 * 1024;
 
-fn setup_ringbuf_with_size(wakeup_stragy: WakeupStrategy) -> (Producer, Consumer) {
-    let ringbuf1 = RingBuf::new(BUFFER_SIZE).unwrap();
-    let ringbuf2 = RingBuf::from_fd(ringbuf1.clone_fd().unwrap(), BUFFER_SIZE).unwrap();
-    let notification1 = Notification::new().unwrap();
-    let notification2 =
-        unsafe { Notification::from_owned_fd(notification1.fd().try_clone_to_owned().unwrap()) };
+fn setup_ringbuf_with_size(wakeup_strategy: WakeupStrategy) -> (Producer, Consumer) {
+    let consumer = Consumer::new(BUFFER_SIZE).unwrap();
 
-    let consumer = Consumer::new(ringbuf1, notification1);
-    let producer = Producer::with_wakeup_strategy(ringbuf2, notification2, wakeup_stragy);
+    let memory_fd = consumer.memory_fd().try_clone_to_owned().unwrap();
+    let notification_fd = consumer.notification_fd().try_clone_to_owned().unwrap();
+
+    let producer = Producer::new(memory_fd, notification_fd, BUFFER_SIZE, wakeup_strategy).unwrap();
 
     (producer, consumer)
 }
@@ -23,7 +21,7 @@ fn setup_ringbuf_with_size(wakeup_stragy: WakeupStrategy) -> (Producer, Consumer
     threads = [1, 2, 4, 8],
     args = [
         (64, WakeupStrategy::Forced), (256, WakeupStrategy::Forced), (512, WakeupStrategy::Forced), (1024, WakeupStrategy::Forced),
-        (64, WakeupStrategy::SelfPacing), (256, WakeupStrategy::SelfPacing), (512, WakeupStrategy::SelfPacing), (1024, WakeupStrategy::SelfPacing)
+        (64, WakeupStrategy::NoWakeup), (256, WakeupStrategy::NoWakeup), (512, WakeupStrategy::NoWakeup), (1024, WakeupStrategy::NoWakeup)
     ]
 )]
 fn bench_producer_speed(bencher: divan::Bencher, (record_size, wakeup): (usize, WakeupStrategy)) {

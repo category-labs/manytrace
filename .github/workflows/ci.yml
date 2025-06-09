@@ -35,7 +35,7 @@ jobs:
         run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
 
       - name: Run loom tests
-        run: cargo nextest run --release -F loom loom_tests
+        run: cargo nextest run --release -F loom loom::tests
 
   clippy:
     name: Clippy

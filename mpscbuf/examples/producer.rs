@@ -3,7 +3,7 @@ use governor::clock::DefaultClock;
 use governor::middleware::NoOpMiddleware;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
-use mpscbuf::{create_producer, WakeupStrategy};
+use mpscbuf::{Producer, WakeupStrategy};
 use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd, OwnedFd};
@@ -40,10 +40,9 @@ struct Args {
 fn parse_wakeup_strategy(strategy: &str) -> Result<WakeupStrategy, String> {
     match strategy.to_lowercase().as_str() {
         "forced" => Ok(WakeupStrategy::Forced),
-        "self-pacing" | "selfpacing" => Ok(WakeupStrategy::SelfPacing),
         "no-wakeup" | "nowakeup" => Ok(WakeupStrategy::NoWakeup),
         _ => Err(format!(
-            "Invalid wakeup strategy: {}. Valid options: forced, self-pacing, no-wakeup",
+            "Invalid wakeup strategy: {}. Valid options: forced, no-wakeup",
             strategy
         )),
     }
@@ -119,7 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let wakeup_strategy = args.wakeup_strategy;
 
-    let producer = create_producer(memory_fd, notification_fd, memory_size, wakeup_strategy)?;
+    let producer = Producer::new(memory_fd, notification_fd, memory_size, wakeup_strategy)?;
 
     info!(
         producer_id = args.id,

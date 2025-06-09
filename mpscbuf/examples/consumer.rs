@@ -1,6 +1,6 @@
 use clap::Parser;
 use hdrhistogram::Histogram;
-use mpscbuf::create_consumer;
+use mpscbuf::Consumer;
 use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
 use std::collections::HashMap;
 use std::os::fd::AsFd;
@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "creating ring buffer"
     );
 
-    let consumer = create_consumer(buffer_size)?;
+    let consumer = Consumer::new(buffer_size)?;
 
     let memory_fd = consumer.memory_fd().try_clone_to_owned()?;
     let notification_fd = consumer.notification_fd().try_clone_to_owned()?;
