@@ -309,17 +309,13 @@ mod tests {
             let mut received_messages = Vec::new();
             let mut count = 0;
 
-            for record_result in consumer.blocking_iter() {
-                match record_result {
-                    Ok(record) => {
-                        let data = record.as_slice().to_vec();
-                        received_messages.push(data);
-                        count += 1;
-                        if count >= num_messages {
-                            break;
-                        }
-                    }
-                    Err(e) => panic!("Consumer error: {:?}", e),
+            while count < num_messages {
+                if let Some(record) = consumer.iter().next() {
+                    let data = record.as_slice().to_vec();
+                    received_messages.push(data);
+                    count += 1;
+                } else {
+                    consumer.wait().unwrap();
                 }
             }
             received_messages
@@ -368,15 +364,11 @@ mod tests {
 
         let consumer_handle = thread::spawn(move || {
             let mut count = 0;
-            for record_result in consumer.blocking_iter() {
-                match record_result {
-                    Ok(_record) => {
-                        count += 1;
-                        if count >= num_messages {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
+            while count < num_messages {
+                if let Some(_record) = consumer.iter().next() {
+                    count += 1;
+                } else if consumer.wait().is_err() {
+                    break;
                 }
             }
             count
@@ -403,16 +395,10 @@ mod tests {
             unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
 
         let consumer = crate::Consumer::new(ringbuf, notification);
-        let producer1 = Producer::with_wakeup_strategy(
-            ringbuf_clone1,
-            notification1,
-            WakeupStrategy::SelfPacing,
-        );
-        let producer2 = Producer::with_wakeup_strategy(
-            ringbuf_clone2,
-            notification2,
-            WakeupStrategy::SelfPacing,
-        );
+        let producer1 =
+            Producer::with_wakeup_strategy(ringbuf_clone1, notification1, WakeupStrategy::Forced);
+        let producer2 =
+            Producer::with_wakeup_strategy(ringbuf_clone2, notification2, WakeupStrategy::Forced);
 
         let num_messages = 10000;
         let handle1 = thread::spawn(move || {
@@ -435,15 +421,11 @@ mod tests {
 
         let consumer_handle = thread::spawn(move || {
             let mut count = 0;
-            for record_result in consumer.blocking_iter() {
-                match record_result {
-                    Ok(_record) => {
-                        count += 1;
-                        if count >= num_messages {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
+            while count < num_messages {
+                if let Some(_record) = consumer.iter().next() {
+                    count += 1;
+                } else if consumer.wait().is_err() {
+                    break;
                 }
             }
             count
@@ -474,9 +456,13 @@ mod tests {
         drop(reserved);
 
         let consumer_handle = thread::spawn(move || -> Result<(), MpscBufError> {
-            if let Some(record_result) = consumer.blocking_iter().next() {
-                let record = record_result?;
-                assert_eq!(record.as_slice(), b"test message");
+            loop {
+                if let Some(record) = consumer.iter().next() {
+                    assert_eq!(record.as_slice(), b"test message");
+                    break;
+                } else {
+                    consumer.wait()?;
+                }
             }
             Ok(())
         });

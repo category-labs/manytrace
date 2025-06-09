@@ -210,17 +210,16 @@ mod loom_tests {
             });
 
             let mut received = vec![];
-            for _ in 0..num_messages {
-                for record in consumer.blocking_iter() {
-                    let record = record.unwrap();
+            while received.len() < num_messages {
+                for record in consumer.iter() {
                     let data = std::str::from_utf8(record.as_slice()).unwrap();
                     received.push(data.to_string());
                     if received.len() >= num_messages {
                         break;
                     }
                 }
-                if received.len() >= num_messages {
-                    break;
+                if received.len() < num_messages {
+                    consumer.wait().unwrap();
                 }
             }
 

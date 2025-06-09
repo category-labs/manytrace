@@ -62,8 +62,8 @@ impl Consumer {
         ConsumerIter::new(&self.ringbuf)
     }
 
-    pub fn blocking_iter(&self) -> BlockingConsumerIter {
-        BlockingConsumerIter::new(&self.ringbuf, &self.notification)
+    pub fn wait(&self) -> Result<(), MpscBufError> {
+        self.notification.wait()
     }
 
     pub fn available_records(&self) -> u64 {
@@ -127,41 +127,6 @@ impl<'a> Iterator for ConsumerIter<'a> {
             } else {
                 self.ringbuf.advance_consumer(cons_pos + total_len);
             }
-        }
-    }
-}
-
-pub struct BlockingConsumerIter<'a> {
-    iter: ConsumerIter<'a>,
-    notification: &'a Notification,
-    got_data: bool,
-}
-
-impl<'a> BlockingConsumerIter<'a> {
-    fn new(ringbuf: &'a RingBuf, notification: &'a Notification) -> Self {
-        BlockingConsumerIter {
-            iter: ConsumerIter::new(ringbuf),
-            notification,
-            got_data: false,
-        }
-    }
-}
-
-impl<'a> Iterator for BlockingConsumerIter<'a> {
-    type Item = Result<Record<'a>, MpscBufError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if !self.got_data {
-                if let Err(e) = self.notification.wait() {
-                    return Some(Err(e));
-                }
-            }
-            if let Some(record) = self.iter.next() {
-                self.got_data = true;
-                return Some(Ok(record));
-            }
-            self.got_data = false;
         }
     }
 }

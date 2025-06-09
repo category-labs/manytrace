@@ -27,6 +27,9 @@ struct Args {
 
     #[clap(short, long, default_value_t = 10)]
     report_interval_secs: u64,
+
+    #[clap(long)]
+    busy_poll: bool,
 }
 
 fn connect_to_producer(
@@ -120,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let histogram_clone = histogram.clone();
     let per_producer_counts_clone = per_producer_counts.clone();
     let report_interval_secs = args.report_interval_secs;
+    let busy_poll = args.busy_poll;
 
     let consumer_thread = thread::spawn(
         move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -127,46 +131,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             info!("starting message consumption");
 
-            for record_result in consumer.blocking_iter() {
-                let record = record_result?;
-                let receive_time = start_time.elapsed().as_nanos() as u64;
+            loop {
+                if let Some(record) = consumer.iter().next() {
+                    let receive_time = start_time.elapsed().as_nanos() as u64;
 
-                let data = record.as_slice();
-                debug!(data_len = data.len(), "received record");
+                    let data = record.as_slice();
+                    debug!(data_len = data.len(), "received record");
 
-                if data.len() >= 24 {
-                    let timestamp_bytes: [u8; 8] = data[0..8].try_into().unwrap();
-                    let send_time = u64::from_le_bytes(timestamp_bytes);
+                    if data.len() >= 24 {
+                        let timestamp_bytes: [u8; 8] = data[0..8].try_into().unwrap();
+                        let send_time = u64::from_le_bytes(timestamp_bytes);
 
-                    let sequence_bytes: [u8; 8] = data[8..16].try_into().unwrap();
-                    let sequence = u64::from_le_bytes(sequence_bytes);
+                        let sequence_bytes: [u8; 8] = data[8..16].try_into().unwrap();
+                        let sequence = u64::from_le_bytes(sequence_bytes);
 
-                    let producer_id_bytes: [u8; 4] = data[16..20].try_into().unwrap();
-                    let producer_id = u32::from_le_bytes(producer_id_bytes);
+                        let producer_id_bytes: [u8; 4] = data[16..20].try_into().unwrap();
+                        let producer_id = u32::from_le_bytes(producer_id_bytes);
 
-                    let latency_ns = receive_time.saturating_sub(send_time);
-                    let latency_us = latency_ns / 1000;
+                        let latency_ns = receive_time.saturating_sub(send_time);
+                        let latency_us = latency_ns / 1000;
 
-                    debug!(
-                        producer_id = producer_id,
-                        sequence = sequence,
-                        latency_us = latency_us,
-                        "processed message"
-                    );
+                        debug!(
+                            producer_id = producer_id,
+                            sequence = sequence,
+                            latency_us = latency_us,
+                            "processed message"
+                        );
 
-                    histogram_clone.lock().unwrap().record(latency_us)?;
+                        histogram_clone.lock().unwrap().record(latency_us)?;
 
-                    let mut counts = per_producer_counts_clone.lock().unwrap();
-                    *counts.entry(producer_id).or_insert(0) += 1;
-                } else {
-                    warn!(
-                        data_len = data.len(),
-                        "received message too short, skipping"
-                    );
+                        let mut counts = per_producer_counts_clone.lock().unwrap();
+                        *counts.entry(producer_id).or_insert(0) += 1;
+                    } else {
+                        warn!(
+                            data_len = data.len(),
+                            "received message too short, skipping"
+                        );
+                    }
+                } else if !busy_poll {
+                    consumer.wait()?;
                 }
             }
-
-            Ok(())
         },
     );
 
