@@ -1,4 +1,4 @@
-use crate::{sync::Ordering, Memory, Metadata, MpscBufError};
+use crate::{memory::Memory, sync::Ordering, Metadata, MpscBufError};
 use eyre::Result;
 use std::{os::fd::AsFd, sync::atomic::fence};
 
@@ -26,43 +26,43 @@ impl RingBuf {
         Ok(RingBuf { memory })
     }
 
-    pub fn metadata(&self) -> &Metadata {
+    pub(crate) fn metadata(&self) -> &Metadata {
         unsafe { &*(self.memory.metadata_ptr().as_ptr() as *const Metadata) }
     }
 
-    pub fn data_size(&self) -> usize {
+    pub(crate) fn data_size(&self) -> usize {
         self.memory.data_size()
     }
 
-    pub fn size_mask(&self) -> u64 {
+    pub(crate) fn size_mask(&self) -> u64 {
         (self.memory.data_size() - 1) as u64
     }
 
-    pub fn data_ptr(&self) -> *mut u8 {
+    pub(crate) fn data_ptr(&self) -> *mut u8 {
         self.memory.data_ptr().as_ptr()
     }
 
-    pub fn consumer_pos(&self) -> u64 {
+    pub(crate) fn consumer_pos(&self) -> u64 {
         self.metadata().consumer.load(Ordering::Acquire)
     }
 
-    pub fn producer_pos(&self) -> u64 {
+    pub(crate) fn producer_pos(&self) -> u64 {
         self.metadata().producer.load(Ordering::Acquire)
     }
 
-    pub fn advance_producer(&self, amount: u64) {
+    pub(crate) fn advance_producer(&self, amount: u64) {
         self.metadata().producer.store(amount, Ordering::Release);
     }
 
-    pub fn advance_consumer(&self, amount: u64) {
+    pub(crate) fn advance_consumer(&self, amount: u64) {
         self.metadata().consumer.store(amount, Ordering::Release);
     }
 
-    pub fn increment_dropped(&self) {
+    pub(crate) fn increment_dropped(&self) {
         self.metadata().dropped.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn dropped(&self) -> u64 {
+    pub(crate) fn dropped(&self) -> u64 {
         self.metadata().dropped.load(Ordering::Relaxed)
     }
 

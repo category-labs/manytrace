@@ -7,7 +7,7 @@ use nix::unistd::ftruncate;
 use std::num::NonZero;
 use std::os::unix::io::AsFd;
 
-pub struct Memory {
+pub(crate) struct Memory {
     ptr: NonNull<u8>,
     size: usize,
     data_size: usize,
@@ -16,7 +16,7 @@ pub struct Memory {
 }
 
 impl Memory {
-    pub fn new(data_size: usize) -> Result<Self> {
+    pub(crate) fn new(data_size: usize) -> Result<Self> {
         let page_size = get_page_size();
 
         ensure!(
@@ -38,7 +38,7 @@ impl Memory {
         Self::from_fd(fd, data_size)
     }
 
-    pub fn from_fd(fd: std::os::fd::OwnedFd, data_size: usize) -> Result<Self> {
+    pub(crate) fn from_fd(fd: std::os::fd::OwnedFd, data_size: usize) -> Result<Self> {
         let page_size = get_page_size();
 
         ensure!(
@@ -99,39 +99,39 @@ impl Memory {
         Ok(memory)
     }
 
-    pub fn as_ptr(&self) -> NonNull<u8> {
+    pub(crate) fn as_ptr(&self) -> NonNull<u8> {
         self.ptr
     }
 
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         self.size
     }
 
-    pub fn page_size(&self) -> usize {
+    pub(crate) fn page_size(&self) -> usize {
         self.page_size
     }
 
-    pub fn metadata_ptr(&self) -> NonNull<u8> {
+    pub(crate) fn metadata_ptr(&self) -> NonNull<u8> {
         self.ptr
     }
 
-    pub fn data_ptr(&self) -> NonNull<u8> {
+    pub(crate) fn data_ptr(&self) -> NonNull<u8> {
         unsafe { NonNull::new_unchecked(self.ptr.as_ptr().add(self.page_size)) }
     }
 
-    pub fn data_size(&self) -> usize {
+    pub(crate) fn data_size(&self) -> usize {
         self.data_size
     }
 
-    pub fn size_mask(&self) -> usize {
+    pub(crate) fn size_mask(&self) -> usize {
         self.data_size() - 1
     }
 
-    pub fn fd(&self) -> &std::os::fd::OwnedFd {
+    pub(crate) fn fd(&self) -> &std::os::fd::OwnedFd {
         &self.fd
     }
 
-    pub fn clone_fd(&self) -> Result<std::os::fd::OwnedFd> {
+    pub(crate) fn clone_fd(&self) -> Result<std::os::fd::OwnedFd> {
         self.fd
             .as_fd()
             .try_clone_to_owned()

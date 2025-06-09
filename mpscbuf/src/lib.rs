@@ -9,15 +9,15 @@ use crossbeam::utils::CachePadded;
 use sync::{AtomicU64, Ordering, Spinlock};
 
 #[repr(C)]
-pub struct Metadata {
-    pub spinlock: CachePadded<Spinlock<()>>,
-    pub producer: AtomicU64,
-    pub consumer: AtomicU64,
-    pub dropped: AtomicU64,
+pub(crate) struct Metadata {
+    pub(crate) spinlock: CachePadded<Spinlock<()>>,
+    pub(crate) producer: AtomicU64,
+    pub(crate) consumer: AtomicU64,
+    pub(crate) dropped: AtomicU64,
 }
 
 impl Metadata {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 }
@@ -34,63 +34,67 @@ impl Default for Metadata {
 }
 
 #[repr(C)]
-pub struct RecordHeader {
+pub(crate) struct RecordHeader {
     header: AtomicU64,
 }
 
-pub const BUSY_FLAG: u32 = 1 << 31;
-pub const DISCARD_FLAG: u32 = 1 << 30;
-pub const HEADER_SIZE: usize = std::mem::size_of::<RecordHeader>();
+pub(crate) const BUSY_FLAG: u32 = 1 << 31;
+pub(crate) const DISCARD_FLAG: u32 = 1 << 30;
+pub(crate) const HEADER_SIZE: usize = std::mem::size_of::<RecordHeader>();
 
 impl RecordHeader {
-    pub fn new(len: u32) -> Self {
+    pub(crate) fn new(len: u32) -> Self {
         let header_value = (len as u64) | ((BUSY_FLAG as u64) << 32);
         RecordHeader {
             header: AtomicU64::new(header_value),
         }
     }
 
-    pub fn discard(&self) {
+    pub(crate) fn discard(&self) {
         let current = self.header.load(Ordering::Relaxed);
         let len = current as u32;
         let new_value = (len as u64) | ((DISCARD_FLAG as u64) << 32);
         self.header.store(new_value, Ordering::Release);
     }
 
-    pub fn commit(&self) {
+    pub(crate) fn commit(&self) {
         let current = self.header.load(Ordering::Relaxed);
         let len = current as u32;
         let new_value = len as u64;
         self.header.store(new_value, Ordering::Release);
     }
 
-    pub fn is_discarded(&self) -> bool {
+    pub(crate) fn is_discarded(&self) -> bool {
         let current = self.header.load(Ordering::Relaxed);
         let flags = (current >> 32) as u32;
         flags & DISCARD_FLAG != 0
     }
 
-    pub fn len_and_flags(&self) -> (u32, u32) {
+    pub(crate) fn len_and_flags(&self) -> (u32, u32) {
         let current = self.header.load(Ordering::Acquire);
         let len = current as u32;
         let flags = (current >> 32) as u32;
         (len, flags)
     }
 
-    pub fn write_initial(&self, len: u32) {
+    pub(crate) fn write_initial(&self, len: u32) {
         let header_value = (len as u64) | ((BUSY_FLAG as u64) << 32);
         self.header.store(header_value, Ordering::Release);
     }
 }
 
-pub use consumer::{Consumer, ConsumerIter, Record};
+// Public API - these are what users should use
+pub use consumer::{Consumer, Record};
 pub use error::MpscBufError;
-pub use memory::Memory;
 pub use producer::{Producer, ReservedBuffer, WakeupStrategy};
 pub use ringbuf::RingBuf;
 pub use sync::notification::Notification;
 
-pub use eyre::{Result, WrapErr};
+// Re-export for convenience
+pub use eyre::Result;
+
+// Internal types - still exposed for now but marked as implementation details
+pub use consumer::ConsumerIter;
 
 #[cfg(all(test, feature = "loom"))]
 mod loom_tests {

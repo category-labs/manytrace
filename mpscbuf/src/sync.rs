@@ -1,11 +1,11 @@
 #[cfg(not(feature = "loom"))]
-pub use std::sync::atomic::{AtomicU64, Ordering};
+pub(crate) use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "loom")]
-pub use loom::sync::atomic::{AtomicU64, Ordering};
+pub(crate) use loom::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(not(feature = "loom"))]
-pub struct Spinlock<T> {
+pub(crate) struct Spinlock<T> {
     lock: AtomicU64,
     value: std::cell::UnsafeCell<T>,
 }
@@ -17,20 +17,20 @@ unsafe impl<T: Send> Sync for Spinlock<T> {}
 unsafe impl<T: Send> Send for Spinlock<T> {}
 
 #[cfg(not(feature = "loom"))]
-pub struct SpinlockGuard<'a, T> {
+pub(crate) struct SpinlockGuard<'a, T> {
     spinlock: &'a Spinlock<T>,
 }
 
 #[cfg(not(feature = "loom"))]
 impl<T> Spinlock<T> {
-    pub fn new(value: T) -> Self {
+    pub(crate) fn new(value: T) -> Self {
         Self {
             lock: AtomicU64::new(0),
             value: std::cell::UnsafeCell::new(value),
         }
     }
 
-    pub fn lock(&self) -> SpinlockGuard<T> {
+    pub(crate) fn lock(&self) -> SpinlockGuard<T> {
         loop {
             if self
                 .lock
@@ -44,7 +44,7 @@ impl<T> Spinlock<T> {
         SpinlockGuard { spinlock: self }
     }
 
-    pub fn try_lock(&self) -> Option<SpinlockGuard<T>> {
+    pub(crate) fn try_lock(&self) -> Option<SpinlockGuard<T>> {
         if self
             .lock
             .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
@@ -81,23 +81,23 @@ impl<'a, T> Drop for SpinlockGuard<'a, T> {
 }
 
 #[cfg(feature = "loom")]
-pub struct Spinlock<T> {
+pub(crate) struct Spinlock<T> {
     inner: loom::sync::Mutex<T>,
 }
 
 #[cfg(feature = "loom")]
 impl<T> Spinlock<T> {
-    pub fn new(value: T) -> Self {
+    pub(crate) fn new(value: T) -> Self {
         Self {
             inner: loom::sync::Mutex::new(value),
         }
     }
 
-    pub fn lock(&self) -> impl std::ops::Deref<Target = T> + '_ {
+    pub(crate) fn lock(&self) -> impl std::ops::Deref<Target = T> + '_ {
         self.inner.lock().unwrap()
     }
 
-    pub fn try_lock(&self) -> Option<impl std::ops::Deref<Target = T> + '_> {
+    pub(crate) fn try_lock(&self) -> Option<impl std::ops::Deref<Target = T> + '_> {
         self.inner.try_lock().ok()
     }
 }
@@ -132,14 +132,14 @@ pub mod notification {
             Notification { eventfd }
         }
 
-        pub fn notify(&self) -> Result<(), MpscBufError> {
+        pub(crate) fn notify(&self) -> Result<(), MpscBufError> {
             self.eventfd
                 .write(1)
                 .map_err(|e| MpscBufError::EventfdWrite(e.to_string()))?;
             Ok(())
         }
 
-        pub fn wait(&self) -> Result<(), MpscBufError> {
+        pub(crate) fn wait(&self) -> Result<(), MpscBufError> {
             self.eventfd
                 .read()
                 .map_err(|e| MpscBufError::EventfdRead(e.to_string()))?;
@@ -186,14 +186,14 @@ pub mod notification {
             panic!("from_owned_fd() not supported in loom mode")
         }
 
-        pub fn notify(&self) -> Result<(), MpscBufError> {
+        pub(crate) fn notify(&self) -> Result<(), MpscBufError> {
             let mut notified = self.inner.mutex.lock().unwrap();
             *notified = true;
             self.inner.condvar.notify_one();
             Ok(())
         }
 
-        pub fn wait(&self) -> Result<(), MpscBufError> {
+        pub(crate) fn wait(&self) -> Result<(), MpscBufError> {
             let mut notified = self.inner.mutex.lock().unwrap();
             while !*notified {
                 notified = self.inner.condvar.wait(notified).unwrap();
