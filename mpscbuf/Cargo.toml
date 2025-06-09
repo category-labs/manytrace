@@ -6,9 +6,10 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["disable-tracing"]
 loom = ["dep:loom"]
-tracing = ["dep:tracing"]
+trace = ["tracing/max_level_trace", "tracing/release_max_level_trace"]
+disable-tracing = ["tracing/max_level_off", "tracing/release_max_level_off"]
 
 [dependencies]
 crossbeam.workspace = true
@@ -17,7 +18,7 @@ libc.workspace = true
 nix.workspace = true
 thiserror.workspace = true
 loom = { version = "0.7.2", optional = true }
-tracing = { workspace = true, optional = true }
+tracing = { workspace = true }
 
 [[bench]]
 name = "ringbuf"

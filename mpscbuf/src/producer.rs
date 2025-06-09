@@ -3,8 +3,6 @@ use crate::{
     HEADER_SIZE,
 };
 use std::ops::{Deref, DerefMut};
-
-#[cfg(feature = "tracing")]
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,8 +44,7 @@ impl Producer {
         let consumer_pos = self.ringbuf.consumer_pos();
         let producer_pos = self.ringbuf.producer_pos();
         let new_prod_pos = producer_pos + total_size as u64;
-        
-        #[cfg(feature = "tracing")]
+
         trace!(
             producer_pos = producer_pos,
             consumer_pos = consumer_pos,
@@ -57,9 +54,8 @@ impl Producer {
             size_mask = self.ringbuf.size_mask(),
             "producer reserve attempt"
         );
-        
+
         if new_prod_pos - consumer_pos > self.ringbuf.size_mask() {
-            #[cfg(feature = "tracing")]
             trace!(
                 producer_pos = producer_pos,
                 consumer_pos = consumer_pos,
@@ -83,15 +79,14 @@ impl Producer {
         }
         let data_ptr = unsafe { ptr.add(HEADER_SIZE) };
         self.ringbuf.advance_producer(new_prod_pos);
-        
-        #[cfg(feature = "tracing")]
+
         trace!(
             producer_pos = new_prod_pos,
             offset = offset,
             size = size,
             "producer reserve success"
         );
-        
+
         Ok(ReservedBuffer {
             data: unsafe { std::slice::from_raw_parts_mut(data_ptr, size) },
             header: unsafe { &mut *(ptr as *mut RecordHeader) },
@@ -133,14 +128,13 @@ impl<'a> ReservedBuffer<'a> {
 impl<'a> Drop for ReservedBuffer<'a> {
     fn drop(&mut self) {
         let is_discarded = self.header.is_discarded();
-        
-        #[cfg(feature = "tracing")]
+
         trace!(
             record_pos = self.record_pos,
             is_discarded = is_discarded,
             "producer record drop"
         );
-        
+
         if !is_discarded {
             self.header.commit();
         }
