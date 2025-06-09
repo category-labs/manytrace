@@ -112,7 +112,6 @@ impl<'a> Iterator for ConsumerIter<'a> {
 
             let header = unsafe { &*header_ptr };
             let (record_len_u32, flags) = header.len_and_flags();
-
             if flags & BUSY_FLAG != 0 {
                 return None;
             }

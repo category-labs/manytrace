@@ -14,8 +14,8 @@ pub enum MpscBufError {
     #[error("memory protection failed: {0}")]
     MprotectFailed(nix::errno::Errno),
 
-    #[error("insufficient space in ring buffer")]
-    InsufficientSpace,
+    #[error("insufficient space in ring buffer. producer position: {0}, consumer position: {1}, data size: {2}")]
+    InsufficientSpace(u64, u64, u64),
 
     #[error("invalid record size: {0}")]
     InvalidRecordSize(usize),

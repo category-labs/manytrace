@@ -4,7 +4,7 @@ fn main() {
     divan::main();
 }
 
-const BUFFER_SIZE: usize = 10 * 1024 * 1024;
+const BUFFER_SIZE: usize = 8 * 1024 * 1024;
 
 fn setup_ringbuf_with_size(wakeup_stragy: WakeupStrategy) -> (Producer, Consumer) {
     let ringbuf1 = RingBuf::new(BUFFER_SIZE).unwrap();

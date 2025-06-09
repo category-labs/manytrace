@@ -10,36 +10,47 @@ use std::os::unix::io::AsFd;
 pub struct Memory {
     ptr: NonNull<u8>,
     size: usize,
+    data_size: usize,
     page_size: usize,
     fd: std::os::fd::OwnedFd,
 }
 
 impl Memory {
-    pub fn new(size: usize) -> Result<Self> {
+    pub fn new(data_size: usize) -> Result<Self> {
         let page_size = get_page_size();
+
         ensure!(
-            size % page_size == 0,
-            MpscBufError::SizeNotAligned(page_size)
+            data_size.is_power_of_two(),
+            MpscBufError::SizeNotAligned(data_size)
         );
-        ensure!(size >= 2 * page_size, MpscBufError::SizeTooSmall(page_size));
+        ensure!(
+            data_size >= page_size,
+            MpscBufError::SizeTooSmall(page_size)
+        );
+
+        let total_size = data_size + page_size;
 
         let fd = memfd_create(c"mpscbuf", MFdFlags::MFD_CLOEXEC)
             .wrap_err("failed to create memory file descriptor")?;
 
-        ftruncate(&fd, size as i64).wrap_err("failed to set memory file size")?;
+        ftruncate(&fd, total_size as i64).wrap_err("failed to set memory file size")?;
 
-        Self::from_fd(fd, size)
+        Self::from_fd(fd, data_size)
     }
 
-    pub fn from_fd(fd: std::os::fd::OwnedFd, size: usize) -> Result<Self> {
+    pub fn from_fd(fd: std::os::fd::OwnedFd, data_size: usize) -> Result<Self> {
         let page_size = get_page_size();
-        ensure!(
-            size % page_size == 0,
-            MpscBufError::SizeNotAligned(page_size)
-        );
-        ensure!(size >= 2 * page_size, MpscBufError::SizeTooSmall(page_size));
 
-        let data_size = size - page_size;
+        ensure!(
+            data_size.is_power_of_two(),
+            MpscBufError::SizeNotAligned(data_size)
+        );
+        ensure!(
+            data_size >= page_size,
+            MpscBufError::SizeTooSmall(page_size)
+        );
+
+        let total_size = data_size + page_size;
         let total_virtual_size = page_size + 2 * data_size;
 
         let ptr = unsafe {
@@ -55,7 +66,7 @@ impl Memory {
         unsafe {
             mmap(
                 Some(NonZero::new(ptr.as_ptr() as usize).unwrap()),
-                NonZero::new(size).unwrap(),
+                NonZero::new(total_size).unwrap(),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED | MapFlags::MAP_FIXED,
                 &fd,
@@ -66,7 +77,7 @@ impl Memory {
 
         unsafe {
             mmap(
-                Some(NonZero::new(ptr.as_ptr().add(size) as usize).unwrap()),
+                Some(NonZero::new(ptr.as_ptr().add(total_size) as usize).unwrap()),
                 NonZero::new(data_size).unwrap(),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED | MapFlags::MAP_FIXED,
@@ -80,7 +91,8 @@ impl Memory {
 
         let memory = Memory {
             ptr,
-            size,
+            size: total_size,
+            data_size,
             page_size,
             fd,
         };
@@ -108,11 +120,11 @@ impl Memory {
     }
 
     pub fn data_size(&self) -> usize {
-        self.size - self.page_size
+        self.data_size
     }
 
     pub fn size_mask(&self) -> usize {
-        self.size - 1
+        self.data_size() - 1
     }
 
     pub fn fd(&self) -> &std::os::fd::OwnedFd {
@@ -130,8 +142,7 @@ impl Memory {
 impl Drop for Memory {
     fn drop(&mut self) {
         unsafe {
-            let data_size = self.size - self.page_size;
-            let total_virtual_size = self.page_size + 2 * data_size;
+            let total_virtual_size = self.page_size + 2 * self.data_size;
             let _ = munmap(
                 NonNull::new(self.ptr.as_ptr() as *mut _).unwrap(),
                 total_virtual_size,
@@ -153,8 +164,8 @@ mod tests {
     #[test]
     fn test_continuous_mapping() -> Result<()> {
         let page_size = get_page_size();
-        let size = page_size * 2;
-        let memory = Memory::new(size)?;
+        let data_size = page_size * 2;
+        let memory = Memory::new(data_size)?;
 
         let metadata_ptr = memory.metadata_ptr().as_ptr();
         let data_ptr = memory.data_ptr().as_ptr();
@@ -198,8 +209,8 @@ mod tests {
     #[test]
     fn test_wrap_around_write() -> Result<()> {
         let page_size = get_page_size();
-        let size = page_size * 2;
-        let memory = Memory::new(size)?;
+        let data_size = page_size * 2;
+        let memory = Memory::new(data_size)?;
 
         let data_ptr = memory.data_ptr().as_ptr();
         let data_size = memory.data_size();
@@ -233,11 +244,11 @@ mod tests {
     #[test]
     fn test_metadata_and_data_regions() -> Result<()> {
         let page_size = get_page_size();
-        let size = page_size * 4;
-        let memory = Memory::new(size)?;
+        let data_size = page_size * 4;
+        let memory = Memory::new(data_size)?;
 
         assert_eq!(memory.metadata_ptr(), memory.as_ptr());
-        assert_eq!(memory.data_size(), size - page_size);
+        assert_eq!(memory.data_size(), data_size);
 
         unsafe {
             let metadata_ptr = memory.metadata_ptr().as_ptr();

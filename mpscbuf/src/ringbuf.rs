@@ -1,28 +1,28 @@
 use crate::{sync::Ordering, Memory, Metadata, MpscBufError};
 use eyre::Result;
-use std::os::fd::AsFd;
+use std::{os::fd::AsFd, sync::atomic::fence};
 
 pub struct RingBuf {
     memory: Memory,
 }
 
 impl RingBuf {
-    pub fn new(size: usize) -> Result<Self, MpscBufError> {
-        let memory =
-            Memory::new(size).map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
+    pub fn new(data_size: usize) -> Result<Self, MpscBufError> {
+        let memory = Memory::new(data_size)
+            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
 
         let metadata_ptr = memory.metadata_ptr().as_ptr() as *mut Metadata;
         unsafe {
             metadata_ptr.write(Metadata::new());
         }
-
+        fence(Ordering::Release);
         Ok(RingBuf { memory })
     }
 
-    pub fn from_fd(fd: std::os::fd::OwnedFd, size: usize) -> Result<Self, MpscBufError> {
-        let memory = Memory::from_fd(fd, size)
+    pub fn from_fd(fd: std::os::fd::OwnedFd, data_size: usize) -> Result<Self, MpscBufError> {
+        let memory = Memory::from_fd(fd, data_size)
             .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
-
+        fence(Ordering::Acquire);
         Ok(RingBuf { memory })
     }
 
@@ -59,7 +59,7 @@ impl RingBuf {
     }
 
     pub fn increment_dropped(&self) {
-        self.metadata().dropped.fetch_add(1, Ordering::Release);
+        self.metadata().dropped.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn dropped(&self) -> u64 {
@@ -96,11 +96,11 @@ mod tests {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
         let size = page_size * 2;
 
-        assert_eq!(ringbuf.data_size(), size - page_size);
+        assert_eq!(ringbuf.data_size(), size);
         assert_eq!(ringbuf.consumer_pos(), 0);
         assert_eq!(ringbuf.producer_pos(), 0);
         assert_eq!(ringbuf.dropped(), 0);
-        assert_eq!(ringbuf.size_mask(), (size - page_size - 1) as u64);
+        assert_eq!(ringbuf.size_mask(), (size - 1) as u64);
 
         Ok(())
     }

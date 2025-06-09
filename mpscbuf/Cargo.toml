@@ -21,6 +21,17 @@ loom = { version = "0.7.2", optional = true }
 name = "ringbuf"
 harness = false
 
+[[example]]
+name = "producer"
+
+[[example]]
+name = "consumer"
+
 [dev-dependencies]
+clap.workspace = true
 divan.workspace = true
+governor.workspace = true
+hdrhistogram.workspace = true
 rstest.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

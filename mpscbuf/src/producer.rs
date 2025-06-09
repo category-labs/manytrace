@@ -6,6 +6,7 @@ use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeupStrategy {
+    // SelfPacing is experimental and runs into bugs where consumer misses wakeups.
     SelfPacing,
     Forced,
 }
@@ -41,9 +42,13 @@ impl Producer {
 
         let consumer_pos = self.ringbuf.consumer_pos();
         let producer_pos = self.ringbuf.producer_pos();
-        let data_size = self.ringbuf.data_size() as u64;
-        if producer_pos - consumer_pos + total_size as u64 > data_size {
-            return Err(MpscBufError::InsufficientSpace);
+        let new_prod_pos = producer_pos + total_size as u64;
+        if new_prod_pos - consumer_pos > self.ringbuf.size_mask() {
+            return Err(MpscBufError::InsufficientSpace(
+                new_prod_pos,
+                consumer_pos,
+                self.ringbuf.size_mask(),
+            ));
         }
 
         let offset = producer_pos & self.ringbuf.size_mask();
@@ -54,8 +59,7 @@ impl Producer {
             (ptr as *mut RecordHeader).write(header);
         }
         let data_ptr = unsafe { ptr.add(HEADER_SIZE) };
-        self.ringbuf
-            .advance_producer(producer_pos + total_size as u64);
+        self.ringbuf.advance_producer(new_prod_pos);
         Ok(ReservedBuffer {
             data: unsafe { std::slice::from_raw_parts_mut(data_ptr, size) },
             header: unsafe { &mut *(ptr as *mut RecordHeader) },
@@ -287,7 +291,7 @@ mod tests {
                             reserved.copy_from_slice(&data);
                             break;
                         }
-                        Err(MpscBufError::InsufficientSpace) => {
+                        Err(MpscBufError::InsufficientSpace(_, _, _)) => {
                             thread::sleep(Duration::from_micros(100));
                         }
                         Err(e) => panic!("Unexpected error: {:?}", e),

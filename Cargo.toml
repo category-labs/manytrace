@@ -9,10 +9,15 @@ authors = ["manytrace contributors"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+clap = { version = "4.5", features = ["derive"] }
 crossbeam = "0.8"
 divan = "0.1"
 eyre = "0.6"
+governor = "0.7"
+hdrhistogram = "7.5"
 libc = "0.2"
-nix = { version = "0.30", features = ["mman", "fs", "event"] }
+nix = { version = "0.30", features = ["mman", "fs", "event", "socket", "uio"] }
 rstest = "0.23"
 thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
