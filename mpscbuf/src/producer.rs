@@ -199,7 +199,6 @@ mod tests {
 
         for msg in messages {
             let mut reserved = producer.reserve(msg.len())?;
-            // Can now use reserved directly as a slice thanks to DerefMut
             reserved[..msg.len()].copy_from_slice(msg);
         }
         let mut count = 0;
@@ -258,9 +257,8 @@ mod tests {
 
     #[rstest]
     fn test_wrap_around_with_small_buffer() -> Result<(), MpscBufError> {
-        // Use minimum size (2 pages) where first page is metadata
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-        let size = page_size * 2; // Minimum allowed size
+        let size = page_size * 2;
         let ringbuf = RingBuf::new(size)?;
         let notification = Notification::new()?;
 
@@ -272,11 +270,9 @@ mod tests {
         let producer =
             Producer::with_wakeup_strategy(ringbuf, notification, WakeupStrategy::Forced);
 
-        // Data size is size - page_size (first page is metadata)
         let _data_size = size - page_size;
-        // Use smaller messages to fit more in the buffer
         let message_size = 256;
-        let num_messages = 50; // This will cause many wrap-arounds
+        let num_messages = 50;
 
         let producer_handle = thread::spawn(move || {
             for i in 0..num_messages {
@@ -327,7 +323,6 @@ mod tests {
 
         for (i, message) in received_messages.iter().enumerate() {
             assert_eq!(message.len(), message_size);
-            // Verify the pattern
             for (j, &byte) in message.iter().enumerate() {
                 let expected = ((i * 256 + j) % 256) as u8;
                 assert_eq!(byte, expected, "Mismatch at message {} byte {}", i, j);
@@ -340,7 +335,7 @@ mod tests {
     #[rstest]
     fn test_simple_multi_threaded() -> Result<(), MpscBufError> {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-        let size = page_size * 4; // Smaller buffer
+        let size = page_size * 4;
         let ringbuf = RingBuf::new(size)?;
         let notification = Notification::new()?;
 
@@ -413,7 +408,7 @@ mod tests {
         let num_messages = 10000;
         let handle1 = thread::spawn(move || {
             for _ in 0..num_messages / 2 {
-                let data = format!("aaaaaaaaaaaaaaaaaa");
+                let data = "aaaaaaaaaaaaaaaaaa".to_string();
                 let mut reserved = producer1.reserve(data.len()).unwrap();
                 reserved.copy_from_slice(data.as_bytes());
                 thread::sleep(Duration::from_micros(100));
@@ -422,7 +417,7 @@ mod tests {
 
         let handle2 = thread::spawn(move || {
             for _ in 0..num_messages / 2 {
-                let data = format!("aaaaaaaaaaaaaaaaaa");
+                let data = "aaaaaaaaaaaaaaaaaa".to_string();
                 let mut reserved = producer2.reserve(data.len()).unwrap();
                 reserved.copy_from_slice(data.as_bytes());
                 thread::sleep(Duration::from_micros(100));

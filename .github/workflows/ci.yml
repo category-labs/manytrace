@@ -32,7 +32,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests with coverage
-        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
+
+      - name: Run loom tests
+        run: cargo nextest run --release -F loom loom_tests
 
   clippy:
     name: Clippy
@@ -50,7 +53,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
+        run: cargo clippy --all-targets --workspace -- -D warnings
 
   fmt:
     name: Format
@@ -81,4 +84,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check compilation
-        run: cargo check --all-targets --all-features --workspace
+        run: cargo check --all-targets --workspace

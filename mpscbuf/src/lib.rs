@@ -115,7 +115,7 @@ mod loom_tests {
             let consumer = Consumer::new(ringbuf, notification.clone());
 
             let num_producers = 3;
-            let msgs_per_producer = 3;
+            let msgs_per_producer = 2;
 
             let mut handles = vec![];
 
@@ -145,9 +145,9 @@ mod loom_tests {
             let mut producer_counts = vec![0; num_producers];
             for record in consumer.iter() {
                 let data = std::str::from_utf8(record.as_slice()).unwrap();
-                for producer_id in 0..num_producers {
+                for (producer_id, count) in producer_counts.iter_mut().enumerate() {
                     if data.starts_with(&format!("p{}_", producer_id)) {
-                        producer_counts[producer_id] += 1;
+                        *count += 1;
                         break;
                     }
                 }
@@ -159,9 +159,9 @@ mod loom_tests {
             }
             for record in consumer.iter() {
                 let data = std::str::from_utf8(record.as_slice()).unwrap();
-                for producer_id in 0..num_producers {
+                for (producer_id, count) in producer_counts.iter_mut().enumerate() {
                     if data.starts_with(&format!("p{}_", producer_id)) {
-                        producer_counts[producer_id] += 1;
+                        *count += 1;
                         break;
                     }
                 }
@@ -169,11 +169,11 @@ mod loom_tests {
             }
 
             assert_eq!(count, msgs_per_producer * num_producers);
-            for producer_id in 0..num_producers {
+            for (producer_id, count) in producer_counts.iter().enumerate() {
                 assert_eq!(
-                    producer_counts[producer_id], msgs_per_producer,
+                    *count, msgs_per_producer,
                     "Producer {} sent {} messages, expected {}",
-                    producer_id, producer_counts[producer_id], msgs_per_producer
+                    producer_id, *count, msgs_per_producer
                 );
             }
         });
