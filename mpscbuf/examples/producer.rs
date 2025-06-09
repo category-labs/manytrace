@@ -106,8 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ringbuf = RingBuf::from_fd(memory_fd, memory_size)?;
     let notification = unsafe { Notification::from_owned_fd(notification_fd) };
 
-    let producer =
-        Producer::with_wakeup_strategy(ringbuf, notification, WakeupStrategy::Forced);
+    let producer = Producer::with_wakeup_strategy(ringbuf, notification, WakeupStrategy::Forced);
 
     let messages_per_second = NonZeroU32::new(args.rate).unwrap();
     let quota = Quota::per_second(messages_per_second);

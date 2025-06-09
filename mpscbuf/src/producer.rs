@@ -6,9 +6,9 @@ use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeupStrategy {
-    // SelfPacing is experimental and runs into bugs where consumer misses wakeups.
     SelfPacing,
     Forced,
+    NoWakeup,
 }
 
 pub struct Producer {
@@ -69,6 +69,10 @@ impl Producer {
             wakeup_strategy: self.wakeup_strategy,
         })
     }
+
+    pub fn notify(&self) -> Result<(), MpscBufError> {
+        self.notification.notify()
+    }
 }
 
 pub struct ReservedBuffer<'a> {
@@ -112,6 +116,7 @@ impl<'a> Drop for ReservedBuffer<'a> {
                     let _ = self.notification.notify();
                 }
             }
+            WakeupStrategy::NoWakeup => {}
         }
     }
 }
@@ -449,6 +454,36 @@ mod tests {
         let received_count = consumer_handle.join().expect("Consumer thread panicked");
 
         assert_eq!(received_count, num_messages);
+        Ok(())
+    }
+
+    #[rstest]
+    fn test_no_wakeup_strategy(
+        producer_and_consumer: (Producer, crate::Consumer),
+    ) -> Result<(), MpscBufError> {
+        let (producer, consumer) = producer_and_consumer;
+        let producer = Producer::with_wakeup_strategy(
+            producer.ringbuf,
+            producer.notification,
+            WakeupStrategy::NoWakeup,
+        );
+
+        let data = b"test message";
+        let mut reserved = producer.reserve(data.len())?;
+        reserved.copy_from_slice(data);
+        drop(reserved);
+
+        let consumer_handle = thread::spawn(move || -> Result<(), MpscBufError> {
+            if let Some(record_result) = consumer.blocking_iter().next() {
+                let record = record_result?;
+                assert_eq!(record.as_slice(), b"test message");
+            }
+            Ok(())
+        });
+
+        producer.notify()?;
+
+        consumer_handle.join().expect("Consumer thread panicked")?;
         Ok(())
     }
 }
