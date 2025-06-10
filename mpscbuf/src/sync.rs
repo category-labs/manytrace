@@ -30,8 +30,12 @@ impl<T> Spinlock<T> {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn lock(&self) -> SpinlockGuard<T> {
         loop {
+            if self.lock.load(Ordering::Relaxed) == 1 {
+                continue;
+            }
             if self
                 .lock
                 .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)

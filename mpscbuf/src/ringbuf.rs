@@ -24,6 +24,7 @@ impl RingBuf {
         Ok(RingBuf { memory })
     }
 
+    #[inline(always)]
     pub(crate) fn metadata(&self) -> &Metadata {
         unsafe { &*(self.memory.metadata_ptr().as_ptr() as *const Metadata) }
     }
@@ -32,26 +33,32 @@ impl RingBuf {
         self.memory.data_size()
     }
 
+    #[inline(always)]
     pub(crate) fn size_mask(&self) -> u64 {
         (self.memory.data_size() - 1) as u64
     }
 
+    #[inline(always)]
     pub(crate) fn data_ptr(&self) -> *mut u8 {
         self.memory.data_ptr().as_ptr()
     }
 
+    #[inline(always)]
     pub(crate) fn consumer_pos(&self) -> u64 {
         self.metadata().consumer.load(Ordering::Acquire)
     }
 
+    #[inline(always)]
     pub(crate) fn producer_pos(&self) -> u64 {
         self.metadata().producer.load(Ordering::Acquire)
     }
 
+    #[inline(always)]
     pub(crate) fn advance_producer(&self, amount: u64) {
         self.metadata().producer.store(amount, Ordering::Release);
     }
 
+    #[inline(always)]
     pub(crate) fn advance_consumer(&self, amount: u64) {
         self.metadata().consumer.store(amount, Ordering::Release);
     }

@@ -109,6 +109,7 @@ impl Memory {
         unsafe { NonNull::new_unchecked(self.ptr.as_ptr().add(self.page_size)) }
     }
 
+    #[inline(always)]
     pub(crate) fn data_size(&self) -> usize {
         self.data_size
     }

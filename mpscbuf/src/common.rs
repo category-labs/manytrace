@@ -3,6 +3,27 @@
 use crate::sync::{AtomicU64, Ordering, Spinlock};
 use crossbeam::utils::CachePadded;
 
+#[inline]
+#[cold]
+fn cold() {}
+
+#[allow(unused)]
+#[inline(always)]
+pub(crate) fn likely(b: bool) -> bool {
+    if !b {
+        cold();
+    }
+    b
+}
+
+#[inline(always)]
+pub(crate) fn unlikely(b: bool) -> bool {
+    if b {
+        cold();
+    }
+    b
+}
+
 #[repr(C)]
 pub(crate) struct Metadata {
     pub(crate) spinlock: CachePadded<Spinlock<()>>,
@@ -38,6 +59,7 @@ pub(crate) const DISCARD_FLAG: u32 = 1 << 30;
 pub(crate) const HEADER_SIZE: usize = std::mem::size_of::<RecordHeader>();
 
 impl RecordHeader {
+    #[inline(always)]
     pub(crate) fn new(len: u32) -> Self {
         let header_value = (len as u64) | ((BUSY_FLAG as u64) << 32);
         RecordHeader {
@@ -45,6 +67,7 @@ impl RecordHeader {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn discard(&self) {
         let current = self.header.load(Ordering::Relaxed);
         let len = current as u32;
@@ -52,6 +75,7 @@ impl RecordHeader {
         self.header.store(new_value, Ordering::Release);
     }
 
+    #[inline(always)]
     pub(crate) fn commit(&self) {
         let current = self.header.load(Ordering::Relaxed);
         let len = current as u32;
@@ -59,12 +83,14 @@ impl RecordHeader {
         self.header.store(new_value, Ordering::Release);
     }
 
+    #[inline(always)]
     pub(crate) fn is_discarded(&self) -> bool {
         let current = self.header.load(Ordering::Relaxed);
         let flags = (current >> 32) as u32;
         flags & DISCARD_FLAG != 0
     }
 
+    #[inline(always)]
     pub(crate) fn len_and_flags(&self) -> (u32, u32) {
         let current = self.header.load(Ordering::Acquire);
         let len = current as u32;

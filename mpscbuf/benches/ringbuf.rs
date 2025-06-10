@@ -1,10 +1,12 @@
+use std::hint::black_box;
+
 use mpscbuf::{Consumer, Producer, WakeupStrategy};
 
 fn main() {
     divan::main();
 }
 
-const BUFFER_SIZE: usize = 2 * 1024 * 1024;
+const BUFFER_SIZE: usize = 16 * 1024 * 1024;
 
 fn setup_ringbuf_with_size(wakeup_strategy: WakeupStrategy) -> (Producer, Consumer) {
     let consumer = Consumer::new(BUFFER_SIZE).unwrap();
@@ -29,11 +31,12 @@ fn bench_producer_speed(bencher: divan::Bencher, (record_size, wakeup): (usize, 
     bencher
         .with_inputs(|| setup_ringbuf_with_size(wakeup))
         .bench_values(|(producer, _consumer)| {
-            let total_records = 1000;
+            let total_records = 10000;
 
             for _ in 0..total_records {
                 let mut reserved = producer.reserve(record_size).unwrap();
                 reserved.copy_from_slice(&record);
+                black_box(reserved);
             }
         });
 }

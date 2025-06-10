@@ -1,5 +1,5 @@
 use crate::{
-    common::{RecordHeader, HEADER_SIZE},
+    common::{likely, unlikely, RecordHeader, HEADER_SIZE},
     consumer::round_up_to_8,
     ringbuf::RingBuf,
     sync::notification::Notification,
@@ -85,7 +85,7 @@ impl Producer {
             "producer reserve attempt"
         );
 
-        if new_prod_pos - consumer_pos > self.ringbuf.size_mask() {
+        if unlikely(new_prod_pos - consumer_pos > self.ringbuf.size_mask()) {
             trace!(
                 producer_pos = producer_pos,
                 consumer_pos = consumer_pos,
@@ -175,7 +175,7 @@ impl<'a> Drop for ReservedBuffer<'a> {
             "producer record drop"
         );
 
-        if !is_discarded {
+        if likely(!is_discarded) {
             self.header.commit();
         }
 
