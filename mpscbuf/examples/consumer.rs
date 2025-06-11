@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "creating ring buffer"
     );
 
-    let consumer = Consumer::new(buffer_size)?;
+    let mut consumer = Consumer::new(buffer_size)?;
 
     let memory_fd = consumer.memory_fd().try_clone_to_owned()?;
     let notification_fd = consumer.notification_fd().try_clone_to_owned()?;
@@ -128,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("starting message consumption");
 
             loop {
-                if let Some(record) = consumer.iter().next() {
+                for record in &mut consumer {
                     let receive_time = start_time.elapsed().as_nanos() as u64;
 
                     let data = record.as_slice();
@@ -164,7 +164,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "received message too short, skipping"
                         );
                     }
-                } else if !busy_poll {
+                }
+                if !busy_poll {
                     consumer.wait()?;
                 }
             }

@@ -67,11 +67,11 @@ impl Consumer {
         self.ringbuf.data_size() + unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
     }
 
-    pub fn iter(&self) -> ConsumerIter {
+    pub fn iter(&mut self) -> ConsumerIter {
         ConsumerIter::new(&self.ringbuf)
     }
 
-    pub fn wait(&self) -> Result<(), MpscBufError> {
+    pub fn wait(&mut self) -> Result<(), MpscBufError> {
         trace!("consumer wait start");
 
         let result = self.notification.wait();
@@ -97,7 +97,7 @@ impl Consumer {
     }
 }
 
-impl<'a> IntoIterator for &'a Consumer {
+impl<'a> IntoIterator for &'a mut Consumer {
     type Item = Record<'a>;
     type IntoIter = ConsumerIter<'a>;
 

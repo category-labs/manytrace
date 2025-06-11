@@ -23,7 +23,7 @@ mod tests {
             let ringbuf_clone = RingBuf::from_fd(ringbuf.clone_fd().unwrap(), size).unwrap();
             let notification = Notification::new().unwrap();
 
-            let consumer = Consumer::from_parts(ringbuf, notification.clone());
+            let mut consumer = Consumer::from_parts(ringbuf, notification.clone());
 
             let num_producers = 3;
             let msgs_per_producer = 2;
@@ -102,7 +102,7 @@ mod tests {
             let ringbuf_clone = RingBuf::from_fd(ringbuf.clone_fd().unwrap(), size).unwrap();
             let notification = Notification::new().unwrap();
 
-            let consumer = Consumer::from_parts(ringbuf, notification.clone());
+            let mut consumer = Consumer::from_parts(ringbuf, notification.clone());
             let producer =
                 Producer::from_parts(ringbuf_clone, notification, WakeupStrategy::Forced);
 

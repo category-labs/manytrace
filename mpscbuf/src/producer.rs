@@ -270,7 +270,7 @@ mod tests {
     #[case::small_messages(&[&b"hello"[..], &b"world"[..]])]
     #[case::mixed_messages(&[&b"first message"[..], &b"second message"[..], &b"third message"[..]])]
     fn test_single_writer_reader(#[case] messages: &[&[u8]]) -> Result<(), MpscBufError> {
-        let (producer, consumer) = producer_and_consumer();
+        let (producer, mut consumer) = producer_and_consumer();
 
         for msg in messages {
             let mut reserved = producer.reserve(msg.len())?;
@@ -341,7 +341,7 @@ mod tests {
         let notification_consumer =
             unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
 
-        let consumer = crate::Consumer::from_parts(ringbuf_consumer, notification_consumer);
+        let mut consumer = crate::Consumer::from_parts(ringbuf_consumer, notification_consumer);
         let producer = Producer::from_parts(ringbuf, notification, WakeupStrategy::Forced);
 
         let _data_size = size - page_size;
@@ -375,11 +375,12 @@ mod tests {
             let mut count = 0;
 
             while count < num_messages {
-                if let Some(record) = consumer.iter().next() {
+                for record in &mut consumer {
                     let data = record.as_slice().to_vec();
                     received_messages.push(data);
                     count += 1;
-                } else {
+                }
+                if count < num_messages {
                     consumer.wait().unwrap();
                 }
             }
@@ -413,7 +414,7 @@ mod tests {
         let notification_consumer =
             unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
 
-        let consumer = crate::Consumer::from_parts(ringbuf_consumer, notification_consumer);
+        let mut consumer = crate::Consumer::from_parts(ringbuf_consumer, notification_consumer);
         let producer = Producer::from_parts(ringbuf, notification, WakeupStrategy::Forced);
 
         let num_messages = 10;
@@ -429,10 +430,11 @@ mod tests {
         let consumer_handle = thread::spawn(move || {
             let mut count = 0;
             while count < num_messages {
-                if let Some(_record) = consumer.iter().next() {
-                    count += 1;
-                } else if consumer.wait().is_err() {
-                    break;
+                consumer.iter().for_each(|_| count += 1);
+                if count < num_messages {
+                    if consumer.wait().is_err() {
+                        break;
+                    }
                 }
             }
             count
@@ -458,7 +460,7 @@ mod tests {
         let notification2 =
             unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
 
-        let consumer = crate::Consumer::from_parts(ringbuf, notification);
+        let mut consumer = crate::Consumer::from_parts(ringbuf, notification);
         let producer1 = Producer::from_parts(ringbuf_clone1, notification1, WakeupStrategy::Forced);
         let producer2 = Producer::from_parts(ringbuf_clone2, notification2, WakeupStrategy::Forced);
 
@@ -484,10 +486,11 @@ mod tests {
         let consumer_handle = thread::spawn(move || {
             let mut count = 0;
             while count < num_messages {
-                if let Some(_record) = consumer.iter().next() {
-                    count += 1;
-                } else if consumer.wait().is_err() {
-                    break;
+                consumer.iter().for_each(|_| count += 1);
+                if count < num_messages {
+                    if consumer.wait().is_err() {
+                        break;
+                    }
                 }
             }
             count
@@ -505,7 +508,7 @@ mod tests {
     fn test_no_wakeup_strategy(
         producer_and_consumer: (Producer, crate::Consumer),
     ) -> Result<(), MpscBufError> {
-        let (producer, consumer) = producer_and_consumer;
+        let (producer, mut consumer) = producer_and_consumer;
         let producer = Producer::from_parts(
             producer.ringbuf,
             producer.notification,
@@ -519,14 +522,12 @@ mod tests {
 
         let consumer_handle = thread::spawn(move || -> Result<(), MpscBufError> {
             loop {
-                if let Some(record) = consumer.iter().next() {
+                for record in &mut consumer {
                     assert_eq!(record.as_slice(), b"test message");
-                    break;
-                } else {
-                    consumer.wait()?;
+                    return Ok(());
                 }
+                consumer.wait()?;
             }
-            Ok(())
         });
 
         producer.notify()?;
