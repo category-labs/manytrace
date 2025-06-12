@@ -1,6 +1,6 @@
 //! Common internal types and utilities for mpscbuf.
 
-use crate::sync::{AtomicU64, Ordering, Spinlock};
+use crate::sync::{AtomicBool, AtomicU64, Ordering, Spinlock};
 use crossbeam::utils::CachePadded;
 
 #[inline]
@@ -30,6 +30,7 @@ pub(crate) struct Metadata {
     pub(crate) producer: AtomicU64,
     pub(crate) consumer: AtomicU64,
     pub(crate) dropped: AtomicU64,
+    pub(crate) consumer_waiting: CachePadded<AtomicBool>,
 }
 
 impl Metadata {
@@ -45,6 +46,7 @@ impl Default for Metadata {
             producer: AtomicU64::new(0),
             consumer: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
+            consumer_waiting: CachePadded::new(AtomicBool::new(false)),
         }
     }
 }

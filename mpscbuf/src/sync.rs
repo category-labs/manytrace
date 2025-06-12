@@ -2,7 +2,7 @@
 pub(crate) use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(feature = "loom")]
-pub(crate) use loom::sync::atomic::{AtomicU64, Ordering};
+pub(crate) use loom::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(not(feature = "loom"))]
 pub(crate) struct Spinlock {

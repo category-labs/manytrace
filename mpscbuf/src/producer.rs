@@ -2,7 +2,7 @@ use crate::{
     common::{likely, unlikely, RecordHeader, HEADER_SIZE},
     consumer::round_up_to_8,
     ringbuf::RingBuf,
-    sync::notification::Notification,
+    sync::{notification::Notification, Ordering},
     MpscBufError,
 };
 use std::ops::{Deref, DerefMut};
@@ -10,6 +10,7 @@ use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeupStrategy {
+    SelfPacing,
     Forced,
     NoWakeup,
 }
@@ -123,6 +124,7 @@ impl Producer {
             data: unsafe { std::slice::from_raw_parts_mut(data_ptr, size) },
             header: unsafe { &mut *(ptr as *mut RecordHeader) },
             notification: &self.notification,
+            ringbuf: &self.ringbuf,
             record_pos: offset,
             wakeup_strategy: self.wakeup_strategy,
         })
@@ -149,6 +151,7 @@ pub struct ReservedBuffer<'a> {
     data: &'a mut [u8],
     header: &'a mut RecordHeader,
     notification: &'a Notification,
+    ringbuf: &'a RingBuf,
     record_pos: u64,
     wakeup_strategy: WakeupStrategy,
 }
@@ -183,6 +186,16 @@ impl<'a> Drop for ReservedBuffer<'a> {
         }
 
         match self.wakeup_strategy {
+            WakeupStrategy::SelfPacing => {
+                if self
+                    .ringbuf
+                    .metadata()
+                    .consumer_waiting
+                    .load(Ordering::Relaxed)
+                {
+                    let _ = self.notification.notify();
+                }
+            }
             WakeupStrategy::Forced => {
                 let _ = self.notification.notify();
             }
@@ -500,6 +513,47 @@ mod tests {
         let received_count = consumer_handle.join().expect("Consumer thread panicked");
 
         assert_eq!(received_count, num_messages);
+        Ok(())
+    }
+
+    #[rstest]
+    fn test_self_pacing_strategy() -> Result<(), MpscBufError> {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+        let size = page_size * 2;
+        let ringbuf = RingBuf::new(size)?;
+        let notification = Notification::new()?;
+
+        let ringbuf_consumer = RingBuf::from_fd(ringbuf.clone_fd().unwrap(), size)?;
+        let notification_consumer =
+            unsafe { Notification::from_owned_fd(notification.fd().try_clone_to_owned().unwrap()) };
+
+        let mut consumer = crate::Consumer::from_parts(ringbuf_consumer, notification_consumer);
+        let producer = Producer::from_parts(ringbuf, notification, WakeupStrategy::SelfPacing);
+
+        let consumer_handle = thread::spawn(move || -> Result<Vec<String>, MpscBufError> {
+            let mut messages = Vec::new();
+
+            consumer.wait()?;
+
+            for record in consumer.iter() {
+                let msg = std::str::from_utf8(record.as_slice()).unwrap().to_string();
+                messages.push(msg);
+            }
+
+            Ok(messages)
+        });
+
+        thread::sleep(Duration::from_millis(1));
+
+        let data = b"message1";
+        let mut reserved = producer.reserve(data.len())?;
+        reserved.copy_from_slice(data);
+        drop(reserved);
+
+        let messages = consumer_handle.join().expect("Consumer thread panicked")?;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0], "message1");
+
         Ok(())
     }
 

@@ -75,6 +75,7 @@
 //!
 //! ### Wakeup Strategies
 //!
+//! - **`WakeupStrategy::SelfPacing`**: Notify consumer if it's waiting.
 //! - **`WakeupStrategy::Forced`**: Always notify consumer after committing.
 //! - **`WakeupStrategy::NoWakeup`**: Never notify consumer. Consumer must poll.
 //!
@@ -84,8 +85,8 @@
 //! # let memory_fd = consumer.memory_fd().try_clone_to_owned()?;
 //! # let notification_fd = consumer.notification_fd().try_clone_to_owned()?;
 //! let low_latency_producer = Producer::new(
-//!     memory_fd.try_clone_to_owned()?,
-//!     notification_fd.try_clone_to_owned()?,
+//!     memory_fd.try_clone()?,
+//!     notification_fd.try_clone()?,
 //!     1024 * 1024,
 //!     WakeupStrategy::Forced
 //! )?;
@@ -121,7 +122,7 @@
 //!
 //! ```rust
 //! # use mpscbuf::Consumer;
-//! # let consumer = Consumer::new(1024 * 1024)?;
+//! # let mut consumer = Consumer::new(1024 * 1024)?;
 //! for record in consumer.iter() {
 //!     let data = record.as_slice();
 //!     // Process data...
@@ -134,7 +135,7 @@
 //!
 //! ```rust
 //! # use mpscbuf::Consumer;
-//! # let consumer = Consumer::new(1024 * 1024)?;
+//! # let mut consumer = Consumer::new(1024 * 1024)?;
 //! loop {
 //!     let mut processed = 0;
 //!     for record in consumer.iter() {
@@ -153,7 +154,7 @@
 //!
 //! ```rust
 //! # use mpscbuf::Consumer;
-//! # let consumer = Consumer::new(1024 * 1024)?;
+//! # let mut consumer = Consumer::new(1024 * 1024)?;
 //! let available_bytes = consumer.available_records();
 //! let dropped = consumer.dropped();
 //! # Ok::<(), mpscbuf::MpscBufError>(())

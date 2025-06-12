@@ -78,7 +78,17 @@ impl Consumer {
     pub fn wait(&mut self) -> Result<(), MpscBufError> {
         trace!("consumer wait start");
 
+        self.ringbuf
+            .metadata()
+            .consumer_waiting
+            .store(true, crate::sync::Ordering::Relaxed);
+
         let result = self.notification.wait();
+
+        self.ringbuf
+            .metadata()
+            .consumer_waiting
+            .store(false, crate::sync::Ordering::Relaxed);
 
         trace!(success = result.is_ok(), "consumer wait end");
 
