@@ -1,91 +1,73 @@
 #[cfg(not(feature = "loom"))]
-pub(crate) use std::sync::atomic::{AtomicU64, Ordering};
+pub(crate) use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(feature = "loom")]
 pub(crate) use loom::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(not(feature = "loom"))]
-pub(crate) struct Spinlock<T> {
-    lock: AtomicU64,
-    value: std::cell::UnsafeCell<T>,
+pub(crate) struct Spinlock {
+    lock: AtomicBool,
 }
 
 #[cfg(not(feature = "loom"))]
-unsafe impl<T: Send> Sync for Spinlock<T> {}
+unsafe impl Sync for Spinlock {}
 
 #[cfg(not(feature = "loom"))]
-unsafe impl<T: Send> Send for Spinlock<T> {}
+unsafe impl Send for Spinlock {}
 
 #[cfg(not(feature = "loom"))]
-pub(crate) struct SpinlockGuard<'a, T> {
-    spinlock: &'a Spinlock<T>,
+pub(crate) struct SpinlockGuard<'a> {
+    spinlock: &'a Spinlock,
 }
 
 #[cfg(not(feature = "loom"))]
-impl<T> Spinlock<T> {
-    pub(crate) fn new(value: T) -> Self {
+impl Spinlock {
+    pub(crate) fn new() -> Self {
         Self {
-            lock: AtomicU64::new(0),
-            value: std::cell::UnsafeCell::new(value),
+            lock: AtomicBool::new(false),
         }
     }
 
     #[inline(always)]
-    pub(crate) fn lock(&self) -> SpinlockGuard<T> {
+    pub(crate) fn lock(&self) -> SpinlockGuard {
+        use crate::common::likely;
         loop {
-            if self.lock.load(Ordering::Relaxed) == 1 {
-                continue;
-            }
-            if self
-                .lock
-                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
+            if likely(
+                self.lock
+                    .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok(),
+            ) {
                 break;
             }
-            std::hint::spin_loop();
+            while self.lock.load(Ordering::Relaxed) {
+                std::hint::spin_loop();
+            }
         }
         SpinlockGuard { spinlock: self }
     }
 }
 
 #[cfg(not(feature = "loom"))]
-impl<'a, T> std::ops::Deref for SpinlockGuard<'a, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.spinlock.value.get() }
-    }
-}
-
-#[cfg(not(feature = "loom"))]
-impl<'a, T> std::ops::DerefMut for SpinlockGuard<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.spinlock.value.get() }
-    }
-}
-
-#[cfg(not(feature = "loom"))]
-impl<'a, T> Drop for SpinlockGuard<'a, T> {
+impl<'a> Drop for SpinlockGuard<'a> {
     fn drop(&mut self) {
-        self.spinlock.lock.store(0, Ordering::Release);
+        self.spinlock.lock.store(false, Ordering::Release);
     }
 }
 
 #[cfg(feature = "loom")]
-pub(crate) struct Spinlock<T> {
-    inner: loom::sync::Mutex<T>,
+pub(crate) struct Spinlock {
+    inner: loom::sync::Mutex<()>,
 }
 
 #[cfg(feature = "loom")]
-impl<T> Spinlock<T> {
-    pub(crate) fn new(value: T) -> Self {
+impl Spinlock {
+    pub(crate) fn new() -> Self {
         Self {
-            inner: loom::sync::Mutex::new(value),
+            inner: loom::sync::Mutex::new(()),
         }
     }
 
-    pub(crate) fn lock(&self) -> impl std::ops::Deref<Target = T> + '_ {
+    pub(crate) fn lock(&self) -> impl std::ops::Deref<Target = ()> + '_ {
         self.inner.lock().unwrap()
     }
 }

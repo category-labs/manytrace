@@ -1,5 +1,4 @@
 use crate::{common::Metadata, memory::Memory, sync::Ordering, MpscBufError};
-use eyre::Result;
 use std::os::fd::AsFd;
 
 pub(crate) struct RingBuf {
@@ -8,8 +7,7 @@ pub(crate) struct RingBuf {
 
 impl RingBuf {
     pub(crate) fn new(data_size: usize) -> Result<Self, MpscBufError> {
-        let memory = Memory::new(data_size)
-            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
+        let memory = Memory::new(data_size)?;
 
         let metadata_ptr = memory.metadata_ptr().as_ptr() as *mut Metadata;
         unsafe {
@@ -19,8 +17,7 @@ impl RingBuf {
     }
 
     pub fn from_fd(fd: std::os::fd::OwnedFd, data_size: usize) -> Result<Self, MpscBufError> {
-        let memory = Memory::from_fd(fd, data_size)
-            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
+        let memory = Memory::from_fd(fd, data_size)?;
         Ok(RingBuf { memory })
     }
 
@@ -73,9 +70,7 @@ impl RingBuf {
 
     #[cfg(test)]
     pub(crate) fn clone_fd(&self) -> Result<std::os::fd::OwnedFd, MpscBufError> {
-        self.memory
-            .clone_fd()
-            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))
+        self.memory.clone_fd()
     }
 
     pub fn memory_fd(&self) -> std::os::fd::BorrowedFd {
@@ -98,7 +93,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_ringbuf_creation(ringbuf: RingBuf) -> Result<()> {
+    fn test_ringbuf_creation(ringbuf: RingBuf) -> Result<(), MpscBufError> {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
         let size = page_size * 2;
 

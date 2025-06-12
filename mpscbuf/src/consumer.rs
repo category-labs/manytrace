@@ -1,5 +1,5 @@
 use crate::{
-    common::{RecordHeader, BUSY_FLAG, DISCARD_FLAG, HEADER_SIZE},
+    common::{likely, unlikely, RecordHeader, BUSY_FLAG, DISCARD_FLAG, HEADER_SIZE},
     ringbuf::RingBuf,
     sync::notification::Notification,
     MpscBufError,
@@ -13,6 +13,7 @@ pub struct Record<'a> {
 }
 
 impl<'a> Record<'a> {
+    #[inline(always)]
     fn new(ringbuf: &'a RingBuf, data: &'a [u8], total_len: u64) -> Self {
         Record {
             ringbuf,
@@ -21,12 +22,14 @@ impl<'a> Record<'a> {
         }
     }
 
+    #[inline(always)]
     pub fn as_slice(&self) -> &[u8] {
         self.data
     }
 }
 
 impl<'a> Drop for Record<'a> {
+    #[inline(always)]
     fn drop(&mut self) {
         self.ringbuf.advance_consumer(self.total_len);
     }
@@ -67,6 +70,7 @@ impl Consumer {
         self.ringbuf.data_size() + unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
     }
 
+    #[inline(always)]
     pub fn iter(&mut self) -> ConsumerIter {
         ConsumerIter::new(&self.ringbuf)
     }
@@ -111,6 +115,7 @@ pub struct ConsumerIter<'a> {
 }
 
 impl<'a> ConsumerIter<'a> {
+    #[inline(always)]
     fn new(ringbuf: &'a RingBuf) -> Self {
         ConsumerIter { ringbuf }
     }
@@ -119,6 +124,7 @@ impl<'a> ConsumerIter<'a> {
 impl<'a> Iterator for ConsumerIter<'a> {
     type Item = Record<'a>;
 
+    #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let cons_pos = self.ringbuf.consumer_pos();
@@ -153,14 +159,14 @@ impl<'a> Iterator for ConsumerIter<'a> {
                 "consumer record header read"
             );
 
-            if flags & BUSY_FLAG != 0 {
+            if unlikely(flags & BUSY_FLAG != 0) {
                 return None;
             }
 
             let record_len = record_len_u32 as usize;
             let total_len = round_up_to_8(HEADER_SIZE + record_len) as u64;
 
-            if flags & DISCARD_FLAG == 0 {
+            if likely(flags & DISCARD_FLAG == 0) {
                 let data_offset = offset + HEADER_SIZE;
                 let record_data =
                     unsafe { std::slice::from_raw_parts(data_ptr.add(data_offset), record_len) };
@@ -186,6 +192,7 @@ impl<'a> Iterator for ConsumerIter<'a> {
     }
 }
 
-pub fn round_up_to_8(len: usize) -> usize {
+#[inline(always)]
+pub(crate) fn round_up_to_8(len: usize) -> usize {
     len.div_ceil(8) * 8
 }

@@ -1,6 +1,5 @@
 use crate::error::MpscBufError;
 use core::ptr::NonNull;
-use eyre::{ensure, Result, WrapErr};
 use nix::sys::memfd::{memfd_create, MFdFlags};
 use nix::sys::mman::{mmap, mmap_anonymous, munmap, MapFlags, ProtFlags};
 use nix::unistd::ftruncate;
@@ -14,39 +13,39 @@ pub(crate) struct Memory {
 }
 
 impl Memory {
-    pub(crate) fn new(data_size: usize) -> Result<Self> {
+    pub(crate) fn new(data_size: usize) -> Result<Self, MpscBufError> {
         let page_size = get_page_size();
 
-        ensure!(
-            data_size.is_power_of_two(),
-            MpscBufError::SizeNotAligned(data_size)
-        );
-        ensure!(
-            data_size >= page_size,
-            MpscBufError::SizeTooSmall(page_size)
-        );
+        if !data_size.is_power_of_two() {
+            return Err(MpscBufError::SizeNotAligned(data_size));
+        }
+        if data_size < page_size {
+            return Err(MpscBufError::SizeTooSmall(page_size));
+        }
 
         let total_size = data_size + page_size;
 
         let fd = memfd_create(c"mpscbuf", MFdFlags::MFD_CLOEXEC)
-            .wrap_err("failed to create memory file descriptor")?;
+            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::ENOMEM))?;
 
-        ftruncate(&fd, total_size as i64).wrap_err("failed to set memory file size")?;
+        ftruncate(&fd, total_size as i64)
+            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
 
         Self::from_fd(fd, data_size)
     }
 
-    pub(crate) fn from_fd(fd: std::os::fd::OwnedFd, data_size: usize) -> Result<Self> {
+    pub(crate) fn from_fd(
+        fd: std::os::fd::OwnedFd,
+        data_size: usize,
+    ) -> Result<Self, MpscBufError> {
         let page_size = get_page_size();
 
-        ensure!(
-            data_size.is_power_of_two(),
-            MpscBufError::SizeNotAligned(data_size)
-        );
-        ensure!(
-            data_size >= page_size,
-            MpscBufError::SizeTooSmall(page_size)
-        );
+        if !data_size.is_power_of_two() {
+            return Err(MpscBufError::SizeNotAligned(data_size));
+        }
+        if data_size < page_size {
+            return Err(MpscBufError::SizeTooSmall(page_size));
+        }
 
         let total_size = data_size + page_size;
         let total_virtual_size = page_size + 2 * data_size;
@@ -58,7 +57,7 @@ impl Memory {
                 ProtFlags::PROT_NONE,
                 MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS,
             )
-            .wrap_err("failed to allocate virtual memory space")?
+            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::ENOMEM))?
         };
 
         unsafe {
@@ -70,7 +69,7 @@ impl Memory {
                 &fd,
                 0,
             )
-            .wrap_err("failed to map metadata and first data region")?;
+            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
         }
 
         unsafe {
@@ -82,7 +81,7 @@ impl Memory {
                 &fd,
                 page_size as i64,
             )
-            .wrap_err("failed to map second data region")?;
+            .map_err(|_| MpscBufError::MmapFailed(nix::errno::Errno::EINVAL))?;
         }
 
         let ptr = NonNull::new(ptr.as_ptr() as *mut u8).expect("mmap returned null pointer");
@@ -119,12 +118,12 @@ impl Memory {
     }
 
     #[cfg(test)]
-    pub(crate) fn clone_fd(&self) -> Result<std::os::fd::OwnedFd> {
+    pub(crate) fn clone_fd(&self) -> Result<std::os::fd::OwnedFd, MpscBufError> {
         use std::os::unix::io::AsFd;
         self.fd
             .as_fd()
             .try_clone_to_owned()
-            .wrap_err("failed to clone memory file descriptor")
+            .map_err(MpscBufError::IoError)
     }
 }
 
@@ -151,7 +150,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_continuous_mapping() -> Result<()> {
+    fn test_continuous_mapping() -> Result<(), MpscBufError> {
         let page_size = get_page_size();
         let data_size = page_size * 2;
         let memory = Memory::new(data_size)?;
@@ -196,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wrap_around_write() -> Result<()> {
+    fn test_wrap_around_write() -> Result<(), MpscBufError> {
         let page_size = get_page_size();
         let data_size = page_size * 2;
         let memory = Memory::new(data_size)?;
@@ -231,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_and_data_regions() -> Result<()> {
+    fn test_metadata_and_data_regions() -> Result<(), MpscBufError> {
         let page_size = get_page_size();
         let data_size = page_size * 4;
         let memory = Memory::new(data_size)?;

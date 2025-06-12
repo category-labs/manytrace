@@ -11,6 +11,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
+#[inline(always)]
+fn get_timestamp_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
 #[derive(Parser, Debug)]
 #[clap(name = "consumer")]
 #[clap(about = "Ring buffer consumer example", long_about = None)]
@@ -109,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             producer_id,
             &memory_fd,
             &notification_fd,
-            consumer.memory_size(),
+            buffer_size,
         )?;
     }
 
@@ -123,17 +135,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let consumer_thread = thread::spawn(
         move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            let start_time = Instant::now();
-
             info!("starting message consumption");
 
             loop {
                 for record in &mut consumer {
-                    let receive_time = start_time.elapsed().as_nanos() as u64;
+                    let receive_time = get_timestamp_ns();
 
                     let data = record.as_slice();
-                    debug!(data_len = data.len(), "received record");
-
                     if data.len() >= 24 {
                         let timestamp_bytes: [u8; 8] = data[0..8].try_into().unwrap();
                         let send_time = u64::from_le_bytes(timestamp_bytes);
@@ -145,16 +153,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let producer_id = u32::from_le_bytes(producer_id_bytes);
 
                         let latency_ns = receive_time.saturating_sub(send_time);
-                        let latency_us = latency_ns / 1000;
 
                         debug!(
                             producer_id = producer_id,
                             sequence = sequence,
-                            latency_us = latency_us,
+                            timestamp = receive_time,
+                            latency_ns = latency_ns,
                             "processed message"
                         );
 
-                        histogram_clone.lock().unwrap().record(latency_us)?;
+                        histogram_clone.lock().unwrap().record(latency_ns)?;
 
                         let mut counts = per_producer_counts_clone.lock().unwrap();
                         *counts.entry(producer_id).or_insert(0) += 1;
@@ -187,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let now = Instant::now();
         let elapsed = now.duration_since(last_report);
 
-        let hist = histogram.lock().unwrap();
+        let mut hist = histogram.lock().unwrap();
         let current_count = hist.len();
         let messages_per_sec = (current_count - last_count) as f64 / elapsed.as_secs_f64();
 
@@ -213,10 +221,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if !hist.is_empty() {
             info!(
-                p50_us = hist.value_at_quantile(0.50),
-                p90_us = hist.value_at_quantile(0.90),
-                p99_us = hist.value_at_quantile(0.99),
-                p99_9_us = hist.value_at_quantile(0.999),
+                p50_ns = hist.value_at_quantile(0.50),
+                p90_ns = hist.value_at_quantile(0.90),
+                p99_ns = hist.value_at_quantile(0.99),
+                p999_ns = hist.value_at_quantile(0.999),
                 max_us = hist.max(),
                 "latency percentiles"
             );
@@ -224,6 +232,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         last_report = now;
         last_count = current_count;
+        hist.reset();
 
         if consumer_thread.is_finished() {
             warn!("consumer thread has finished");

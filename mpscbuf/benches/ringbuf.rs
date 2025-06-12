@@ -6,7 +6,10 @@ fn main() {
     divan::main();
 }
 
-const BUFFER_SIZE: usize = 16 * 1024 * 1024;
+#[global_allocator]
+static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+
+const BUFFER_SIZE: usize = 8 * 1024 * 1024 * 1024;
 
 fn setup_ringbuf_with_size(wakeup_strategy: WakeupStrategy) -> (Producer, Consumer) {
     let consumer = Consumer::new(BUFFER_SIZE).unwrap();
@@ -22,8 +25,8 @@ fn setup_ringbuf_with_size(wakeup_strategy: WakeupStrategy) -> (Producer, Consum
 #[divan::bench(
     threads = [1, 2, 4, 8],
     args = [
-        (64, WakeupStrategy::Forced), (256, WakeupStrategy::Forced), (512, WakeupStrategy::Forced), (1024, WakeupStrategy::Forced),
-        (64, WakeupStrategy::NoWakeup), (256, WakeupStrategy::NoWakeup), (512, WakeupStrategy::NoWakeup), (1024, WakeupStrategy::NoWakeup)
+        (64, WakeupStrategy::Forced), (1024, WakeupStrategy::Forced),
+        (8, WakeupStrategy::NoWakeup), (64, WakeupStrategy::NoWakeup), (1024, WakeupStrategy::NoWakeup)
     ]
 )]
 fn bench_producer_speed(bencher: divan::Bencher, (record_size, wakeup): (usize, WakeupStrategy)) {
@@ -39,4 +42,20 @@ fn bench_producer_speed(bencher: divan::Bencher, (record_size, wakeup): (usize, 
                 black_box(reserved);
             }
         });
+}
+
+#[divan::bench(
+    min_time = 1,
+    args = [8]
+)]
+fn bench_single_reserve(bencher: divan::Bencher, record_size: usize) {
+    let (producer, _consumer) = setup_ringbuf_with_size(WakeupStrategy::NoWakeup);
+    let data = vec![0u8; record_size];
+    bencher.bench_local(move || {
+        for _ in 0..1000 {
+            let mut reserved = producer.reserve(record_size).unwrap();
+            reserved.copy_from_slice(&data);
+            black_box(reserved);
+        }
+    });
 }

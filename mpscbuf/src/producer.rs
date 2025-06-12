@@ -67,11 +67,13 @@ impl Producer {
         }
     }
 
+    #[inline(always)]
     pub fn reserve(&self, size: usize) -> Result<ReservedBuffer, MpscBufError> {
-        let _guard = self.ringbuf.metadata().spinlock.lock();
         let total_size = round_up_to_8(size + HEADER_SIZE);
-
         let consumer_pos = self.ringbuf.consumer_pos();
+
+        let _guard = self.ringbuf.metadata().spinlock.lock();
+
         let producer_pos = self.ringbuf.producer_pos();
         let new_prod_pos = producer_pos + total_size as u64;
 
@@ -166,6 +168,7 @@ impl<'a> ReservedBuffer<'a> {
 }
 
 impl<'a> Drop for ReservedBuffer<'a> {
+    #[inline(always)]
     fn drop(&mut self) {
         let is_discarded = self.header.is_discarded();
 
@@ -431,10 +434,8 @@ mod tests {
             let mut count = 0;
             while count < num_messages {
                 consumer.iter().for_each(|_| count += 1);
-                if count < num_messages {
-                    if consumer.wait().is_err() {
-                        break;
-                    }
+                if count < num_messages && consumer.wait().is_err() {
+                    break;
                 }
             }
             count
@@ -487,10 +488,8 @@ mod tests {
             let mut count = 0;
             while count < num_messages {
                 consumer.iter().for_each(|_| count += 1);
-                if count < num_messages {
-                    if consumer.wait().is_err() {
-                        break;
-                    }
+                if count < num_messages && consumer.wait().is_err() {
+                    break;
                 }
             }
             count
@@ -522,7 +521,7 @@ mod tests {
 
         let consumer_handle = thread::spawn(move || -> Result<(), MpscBufError> {
             loop {
-                for record in &mut consumer {
+                if let Some(record) = consumer.iter().next() {
                     assert_eq!(record.as_slice(), b"test message");
                     return Ok(());
                 }

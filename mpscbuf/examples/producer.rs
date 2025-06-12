@@ -14,6 +14,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
+#[inline(always)]
+fn get_timestamp_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
 #[derive(Parser, Debug)]
 #[clap(name = "producer")]
 #[clap(about = "Ring buffer producer example", long_about = None)]
@@ -137,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut sequence = 0u64;
     let message_size = args.message_size;
-    let start_time = Instant::now();
+    let start_instant = Instant::now();
 
     info!(
         producer_id = args.id,
@@ -146,30 +158,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "starting message production"
     );
 
+    let total_message_size = 24 + message_size;
     loop {
-        rate_limiter
-            .check()
-            .map_err(|_| {
-                thread::sleep(Duration::from_millis(1));
-            })
-            .ok();
+        if rate_limiter.check().is_err() {
+            continue;
+        }
+        let timestamp = get_timestamp_ns();
 
-        let timestamp = start_time.elapsed().as_nanos() as u64;
-
-        let mut message_data = Vec::with_capacity(24 + message_size);
-        message_data.extend_from_slice(&timestamp.to_le_bytes());
-        message_data.extend_from_slice(&sequence.to_le_bytes());
-        message_data.extend_from_slice(&args.id.to_le_bytes());
-        message_data.resize(24 + message_size, b'a');
-
-        match producer.reserve(message_data.len()) {
+        match producer.reserve(total_message_size) {
             Ok(mut reserved) => {
-                reserved.copy_from_slice(&message_data);
+                reserved[0..8].copy_from_slice(&timestamp.to_le_bytes());
+                reserved[8..16].copy_from_slice(&sequence.to_le_bytes());
+                reserved[16..20].copy_from_slice(&args.id.to_le_bytes());
+                reserved[24..].fill(b'a');
                 drop(reserved);
-
-                if matches!(wakeup_strategy, WakeupStrategy::NoWakeup) {
-                    let _ = producer.notify();
-                }
 
                 sequence += 1;
 
@@ -184,7 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!(
                         producer_id = args.id,
                         messages_sent = sequence,
-                        elapsed_secs = start_time.elapsed().as_secs(),
+                        elapsed_secs = start_instant.elapsed().as_secs(),
                         "progress update"
                     );
                 }
