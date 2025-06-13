@@ -1,5 +1,5 @@
 [workspace]
-members = ["mpscbuf", "protocol"]
+members = ["mpscbuf", "protocol", "agent"]
 resolver = "2"
 
 [workspace.package]
@@ -18,8 +18,10 @@ governor = "0.7"
 hdrhistogram = "7.5"
 libc = "0.2"
 nix = { version = "0.30", features = ["mman", "fs", "event", "socket", "uio"] }
+parking_lot = "0.12"
 rkyv = { version = "0.8.10", features = ["alloc", "bytecheck"] }
 rstest = "0.23"
+tempfile = "3.0"
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

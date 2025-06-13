@@ -1,0 +1,21 @@
+[package]
+name = "agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+mpscbuf = { path = "../mpscbuf" }
+protocol = { path = "../protocol" }
+nix = { workspace = true, features = ["socket", "uio"] }
+parking_lot.workspace = true
+rkyv.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+tempfile.workspace = true
+tracing-subscriber.workspace = true
