@@ -28,6 +28,18 @@ impl Consumer {
     pub fn dropped(&self) -> u64 {
         self.inner.dropped()
     }
+
+    pub fn memory_fd(&self) -> std::os::fd::BorrowedFd {
+        self.inner.memory_fd()
+    }
+
+    pub fn notification_fd(&self) -> std::os::fd::BorrowedFd {
+        self.inner.notification_fd()
+    }
+
+    pub fn data_size(&self) -> usize {
+        self.inner.data_size()
+    }
 }
 
 pub struct EventIter<'a> {
@@ -36,7 +48,9 @@ pub struct EventIter<'a> {
 
 impl<'a> EventIter<'a> {
     fn new(consumer: &'a mut MpscConsumer) -> Self {
-        EventIter { iterator: consumer.iter() }
+        EventIter {
+            iterator: consumer.iter(),
+        }
     }
 }
 
