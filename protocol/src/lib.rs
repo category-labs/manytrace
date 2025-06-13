@@ -79,6 +79,16 @@ pub struct Instant<'a> {
     pub labels: Labels<'a>,
 }
 
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[rkyv(compare(PartialEq), derive(Debug))]
+pub enum ControlMessage {
+    Start,
+    Stop,
+    Continue,
+    Ack,
+    Nack,
+}
+
 pub struct CountingWriter {
     write_count: usize,
     total_bytes: usize,
@@ -332,5 +342,25 @@ mod tests {
             result.is_err(),
             "Should return error for insufficient buffer"
         );
+    }
+
+    #[test]
+    fn test_control_message_serialization() {
+        let messages = [
+            ControlMessage::Start,
+            ControlMessage::Stop,
+            ControlMessage::Continue,
+            ControlMessage::Ack,
+            ControlMessage::Nack,
+        ];
+
+        for msg in messages {
+            let buf = to_bytes_in::<_, Error>(&msg, Vec::new())
+                .expect("control message serialization failed");
+            let archived = rkyv::access::<ArchivedControlMessage, rkyv::rancor::Error>(&buf)
+                .expect("failed to access archived control message");
+
+            assert_eq!(*archived, msg, "Archived message should match original");
+        }
     }
 }
