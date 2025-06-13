@@ -63,9 +63,10 @@ impl AgentClient {
             }
             protocol::ArchivedControlMessage::Nack { error } => {
                 let error_str = std::str::from_utf8(error.as_bytes()).unwrap_or("unknown error");
-                Err(AgentError::Io(std::io::Error::other(
-                    format!("agent rejected start: {}", error_str),
-                )))
+                Err(AgentError::Io(std::io::Error::other(format!(
+                    "agent rejected start: {}",
+                    error_str
+                ))))
             }
             _ => Err(AgentError::Io(std::io::Error::other(
                 "unexpected response from agent",

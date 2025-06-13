@@ -89,6 +89,13 @@ pub enum LogLevel {
     Trace,
 }
 
+#[derive(Archive, Serialize, Deserialize)]
+pub enum Event<'a> {
+    Counter(Counter<'a>),
+    Span(Span<'a>),
+    Instant(Instant<'a>),
+}
+
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[rkyv(compare(PartialEq))]
 pub enum ControlMessage<'a> {
@@ -358,6 +365,43 @@ mod tests {
             result.is_err(),
             "Should return error for insufficient buffer"
         );
+    }
+
+    #[rstest]
+    fn test_event_serialization(
+        sample_counter: Counter,
+        sample_span: Span,
+        sample_instant: Instant,
+    ) {
+        let events = [
+            Event::Counter(sample_counter),
+            Event::Span(sample_span),
+            Event::Instant(sample_instant),
+        ];
+
+        for event in events {
+            let buf =
+                to_bytes_in::<_, Error>(&event, Vec::new()).expect("event serialization failed");
+            let archived = rkyv::access::<ArchivedEvent, rkyv::rancor::Error>(&buf)
+                .expect("failed to access archived event");
+
+            match (&event, &*archived) {
+                (Event::Counter(counter), ArchivedEvent::Counter(arch_counter)) => {
+                    assert_eq!(counter.name.as_bytes(), arch_counter.name.as_bytes());
+                    assert_eq!(counter.value, arch_counter.value.to_native());
+                }
+                (Event::Span(span), ArchivedEvent::Span(arch_span)) => {
+                    assert_eq!(span.name.as_bytes(), arch_span.name.as_bytes());
+                    assert_eq!(span.span_id, arch_span.span_id.to_native());
+                    assert_eq!(span.event, arch_span.event);
+                }
+                (Event::Instant(instant), ArchivedEvent::Instant(arch_instant)) => {
+                    assert_eq!(instant.name.as_bytes(), arch_instant.name.as_bytes());
+                    assert_eq!(instant.timestamp, arch_instant.timestamp.to_native());
+                }
+                _ => panic!("mismatched event variants"),
+            }
+        }
     }
 
     #[test]

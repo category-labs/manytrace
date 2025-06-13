@@ -3,10 +3,12 @@ use thiserror::Error;
 
 pub mod agent;
 pub mod client;
+pub mod consumer;
 pub mod thread;
 
 pub use agent::Agent;
 pub use client::AgentClient;
+pub use consumer::Consumer;
 
 #[derive(Error, Debug)]
 pub enum AgentError {
