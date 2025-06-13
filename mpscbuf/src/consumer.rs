@@ -67,7 +67,11 @@ impl Consumer {
     }
 
     pub fn memory_size(&self) -> usize {
-        self.ringbuf.data_size() + unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+        self.data_size() + unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+    }
+
+    pub fn data_size(&self) -> usize {
+        self.ringbuf.data_size()
     }
 
     #[inline(always)]
