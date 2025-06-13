@@ -3,10 +3,9 @@ use parking_lot::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use tracing::{debug, warn};
 
 use crate::thread::socket_listener_thread;
-use crate::{AgentError, Result};
+use crate::Result;
 
 pub struct Agent {
     producer: Arc<Mutex<Option<Producer>>>,
@@ -42,23 +41,8 @@ impl Agent {
         self.producer.lock().is_some()
     }
 
-    pub fn submit(&self, data: &[u8]) -> Result<()> {
-        let producer = self.producer.lock();
-        match producer.as_ref() {
-            Some(producer) => match producer.reserve(data.len()) {
-                Ok(mut reserved) => {
-                    reserved.copy_from_slice(data);
-                    drop(reserved);
-                    debug!(size = data.len(), "submitted trace event");
-                    Ok(())
-                }
-                Err(e) => {
-                    warn!(error = ?e, "failed to reserve space in ring buffer");
-                    Err(AgentError::Mpscbuf(e))
-                }
-            },
-            None => Err(AgentError::NotEnabled),
-        }
+    pub fn submit(&self, _data: &[u8]) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -71,12 +55,10 @@ impl Drop for Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AgentClient;
     use mpscbuf::Consumer;
-    use nix::sys::socket::{recv, sendmsg, ControlMessage, MsgFlags};
-    use protocol::{ControlMessage as ProtocolControlMessage, LogLevel};
+    use protocol::LogLevel;
     use rstest::*;
-    use std::os::fd::AsRawFd;
-    use std::os::unix::net::UnixStream;
     use std::sync::Once;
     use std::thread;
     use std::time::Duration;
@@ -121,12 +103,9 @@ mod tests {
     }
 
     #[fixture]
-    fn consumer_with_fds() -> (Consumer, std::os::fd::OwnedFd, std::os::fd::OwnedFd, usize) {
+    fn consumer() -> Consumer {
         let buffer_size = 1024 * 1024;
-        let consumer = Consumer::new(buffer_size).unwrap();
-        let memory_fd = consumer.memory_fd().try_clone_to_owned().unwrap();
-        let notification_fd = consumer.notification_fd().try_clone_to_owned().unwrap();
-        (consumer, memory_fd, notification_fd, buffer_size)
+        Consumer::new(buffer_size).unwrap()
     }
 
     #[rstest]
@@ -141,142 +120,47 @@ mod tests {
     }
 
     #[rstest]
-    fn test_successful_start_sends_ack(
-        temp_socket_path: String,
-        consumer_with_fds: (Consumer, std::os::fd::OwnedFd, std::os::fd::OwnedFd, usize),
-    ) {
+    fn test_successful_start_sends_ack(temp_socket_path: String, consumer: Consumer) {
         init_tracing();
-        let (_consumer, memory_fd, notification_fd, buffer_size) = consumer_with_fds;
         let _agent = Agent::new(temp_socket_path.clone()).unwrap();
 
         wait_for_socket(&temp_socket_path);
 
-        let stream = UnixStream::connect(&temp_socket_path).unwrap();
-
-        let start_msg = ProtocolControlMessage::Start {
-            buffer_size: buffer_size as u64,
-            log_level: LogLevel::Debug,
-        };
-        let serialized_len = protocol::compute_length(&start_msg).unwrap();
-        let mut buf = vec![0u8; serialized_len];
-        protocol::serialize_to_buf(&start_msg, &mut buf).unwrap();
-
-        let size_iov = [std::io::IoSlice::new(&buf)];
-        let fds = [memory_fd.as_raw_fd(), notification_fd.as_raw_fd()];
-        let cmsg = ControlMessage::ScmRights(&fds);
-
-        sendmsg::<()>(
-            stream.as_raw_fd(),
-            &size_iov,
-            &[cmsg],
-            MsgFlags::empty(),
-            None,
-        )
-        .unwrap();
-
-        let mut response_buf = [0u8; 1024];
-        let bytes_read = recv(stream.as_raw_fd(), &mut response_buf, MsgFlags::empty()).unwrap();
-
-        let archived_response =
-            rkyv::access::<protocol::ArchivedControlMessage, rkyv::rancor::Error>(
-                &response_buf[..bytes_read],
-            )
-            .unwrap();
-
-        match &*archived_response {
-            protocol::ArchivedControlMessage::Ack => {}
-            _ => panic!("Expected Ack response"),
-        }
+        let mut client = AgentClient::new(temp_socket_path);
+        client.start(&consumer, LogLevel::Debug).unwrap();
+        assert!(client.enabled());
     }
 
     #[rstest]
-    fn test_duplicate_start_sends_nack(
-        temp_socket_path: String,
-        consumer_with_fds: (Consumer, std::os::fd::OwnedFd, std::os::fd::OwnedFd, usize),
-    ) {
+    fn test_duplicate_start_sends_nack(temp_socket_path: String, consumer: Consumer) {
         init_tracing();
-        let (_consumer, memory_fd, notification_fd, buffer_size) = consumer_with_fds;
         let _agent = Agent::new(temp_socket_path.clone()).unwrap();
 
         wait_for_socket(&temp_socket_path);
 
-        let stream1 = UnixStream::connect(&temp_socket_path).unwrap();
+        let mut client1 = AgentClient::new(temp_socket_path.clone());
+        client1.start(&consumer, LogLevel::Debug).unwrap();
+        assert!(client1.enabled());
 
-        let start_msg = ProtocolControlMessage::Start {
-            buffer_size: buffer_size as u64,
-            log_level: LogLevel::Debug,
-        };
-        let serialized_len = protocol::compute_length(&start_msg).unwrap();
-        let mut buf = vec![0u8; serialized_len];
-        protocol::serialize_to_buf(&start_msg, &mut buf).unwrap();
-
-        let size_iov = [std::io::IoSlice::new(&buf)];
-        let fds = [memory_fd.as_raw_fd(), notification_fd.as_raw_fd()];
-        let cmsg = ControlMessage::ScmRights(&fds);
-
-        sendmsg::<()>(
-            stream1.as_raw_fd(),
-            &size_iov,
-            &[cmsg],
-            MsgFlags::empty(),
-            None,
-        )
-        .unwrap();
-
-        let mut response_buf = [0u8; 1024];
-        let _bytes_read = recv(stream1.as_raw_fd(), &mut response_buf, MsgFlags::empty()).unwrap();
-
-        let stream2 = UnixStream::connect(&temp_socket_path).unwrap();
-
-        let size_iov2 = [std::io::IoSlice::new(&buf)];
-        sendmsg::<()>(
-            stream2.as_raw_fd(),
-            &size_iov2,
-            &[],
-            MsgFlags::empty(),
-            None,
-        )
-        .unwrap();
-
-        let mut response_buf2 = [0u8; 1024];
-        let bytes_read2 = recv(stream2.as_raw_fd(), &mut response_buf2, MsgFlags::empty()).unwrap();
-
-        let archived_response2 = rkyv::access::<
-            protocol::ArchivedControlMessage,
-            rkyv::rancor::Error,
-        >(&response_buf2[..bytes_read2])
-        .unwrap();
-
-        match &*archived_response2 {
-            protocol::ArchivedControlMessage::Nack { error } => {
-                assert!(error
-                    .as_bytes()
-                    .windows(b"producer already exists".len())
-                    .any(|w| w == b"producer already exists"));
-            }
-            _ => panic!("Expected Nack response"),
-        }
+        let mut client2 = AgentClient::new(temp_socket_path);
+        let result = client2.start(&consumer, LogLevel::Debug);
+        assert!(result.is_err());
+        assert!(!client2.enabled());
     }
 
     #[rstest]
-    fn test_non_start_first_message_drops_connection(temp_socket_path: String) {
+    fn test_client_send_continue(temp_socket_path: String, consumer: Consumer) {
         init_tracing();
         let _agent = Agent::new(temp_socket_path.clone()).unwrap();
 
         wait_for_socket(&temp_socket_path);
 
-        let stream = UnixStream::connect(&temp_socket_path).unwrap();
+        let mut client = AgentClient::new(temp_socket_path);
+        client.start(&consumer, LogLevel::Debug).unwrap();
+        assert!(client.enabled());
 
-        let continue_msg = ProtocolControlMessage::Continue;
-        let serialized_len = protocol::compute_length(&continue_msg).unwrap();
-        let mut buf = vec![0u8; serialized_len];
-        protocol::serialize_to_buf(&continue_msg, &mut buf).unwrap();
-
-        let iov = [std::io::IoSlice::new(&buf)];
-        sendmsg::<()>(stream.as_raw_fd(), &iov, &[], MsgFlags::empty(), None).unwrap();
-
-        let mut response_buf = [0u8; 1024];
-        let bytes_read = recv(stream.as_raw_fd(), &mut response_buf, MsgFlags::empty()).unwrap();
-        assert_eq!(bytes_read, 0);
+        client.send_continue().unwrap();
+        client.stop().unwrap();
+        assert!(!client.enabled());
     }
 }

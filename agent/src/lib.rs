@@ -2,9 +2,11 @@ use mpscbuf::MpscBufError;
 use thiserror::Error;
 
 pub mod agent;
+pub mod client;
 pub mod thread;
 
 pub use agent::Agent;
+pub use client::AgentClient;
 
 #[derive(Error, Debug)]
 pub enum AgentError {
