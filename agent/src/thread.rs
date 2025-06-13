@@ -1,4 +1,4 @@
-use mpscbuf::{Producer, WakeupStrategy};
+use mpscbuf::{Producer as MpscProducer, WakeupStrategy};
 use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
 use parking_lot::Mutex;
 use protocol::ControlMessage;
@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::{get_timestamp_ns, AgentError, Result};
+use crate::{get_timestamp_ns, AgentError, Producer, Result};
 
 pub fn socket_listener_thread(
     socket_path: String,
@@ -121,14 +121,14 @@ fn handle_client_connection(
                 "received connection info from client"
             );
 
-            let new_producer = Producer::new(
+            let new_producer = MpscProducer::new(
                 memory_fd,
                 notification_fd,
                 buffer_size,
                 WakeupStrategy::Forced,
             )?;
 
-            *producer.lock() = Some(new_producer);
+            *producer.lock() = Some(Producer::from_inner(new_producer));
             last_continue_ns.store(get_timestamp_ns(), Ordering::Relaxed);
             debug!("producer initialized");
 

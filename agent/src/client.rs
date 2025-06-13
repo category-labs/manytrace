@@ -1,4 +1,4 @@
-use mpscbuf::Consumer;
+use crate::Consumer;
 use nix::sys::socket::{recv, sendmsg, ControlMessage, MsgFlags};
 use protocol::{ControlMessage as ProtocolControlMessage, LogLevel};
 use std::os::fd::AsRawFd;

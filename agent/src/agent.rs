@@ -1,11 +1,11 @@
-use mpscbuf::Producer;
 use parking_lot::Mutex;
+use protocol::Event;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use crate::thread::socket_listener_thread;
-use crate::Result;
+use crate::{Producer, Result};
 
 pub struct Agent {
     producer: Arc<Mutex<Option<Producer>>>,
@@ -41,8 +41,12 @@ impl Agent {
         self.producer.lock().is_some()
     }
 
-    pub fn submit(&self, _data: &[u8]) -> Result<()> {
-        Ok(())
+    pub fn submit(&self, event: &Event) -> Result<()> {
+        let producer = self.producer.lock();
+        match producer.as_ref() {
+            Some(producer) => producer.submit(event),
+            None => Err(crate::AgentError::NotEnabled),
+        }
     }
 }
 
@@ -55,9 +59,8 @@ impl Drop for Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AgentClient;
-    use mpscbuf::Consumer;
-    use protocol::LogLevel;
+    use crate::{AgentClient, Consumer};
+    use protocol::{Counter, Event, Labels, LogLevel};
     use rstest::*;
     use std::sync::Once;
     use std::thread;
@@ -162,5 +165,29 @@ mod tests {
         client.send_continue().unwrap();
         client.stop().unwrap();
         assert!(!client.enabled());
+    }
+
+    #[rstest]
+    fn test_agent_submit_event(temp_socket_path: String, consumer: Consumer) {
+        init_tracing();
+        let agent = Agent::new(temp_socket_path.clone()).unwrap();
+
+        wait_for_socket(&temp_socket_path);
+
+        let mut client = AgentClient::new(temp_socket_path);
+        client.start(&consumer, LogLevel::Debug).unwrap();
+
+        thread::sleep(Duration::from_millis(10));
+
+        let event = Event::Counter(Counter {
+            name: "test_metric",
+            value: 123.456,
+            timestamp: 1234567890,
+            tid: 1,
+            pid: 2,
+            labels: Labels::new(),
+        });
+
+        agent.submit(&event).unwrap();
     }
 }

@@ -8,15 +8,11 @@ pub struct Producer {
 }
 
 impl Producer {
-    pub fn from_inner(inner: MpscProducer) -> Self {
+    pub(crate) fn from_inner(inner: MpscProducer) -> Self {
         Producer { inner }
     }
 
-    pub fn inner(&self) -> &MpscProducer {
-        &self.inner
-    }
-
-    pub fn submit(&self, event: &Event) -> Result<()> {
+    pub(crate) fn submit(&self, event: &Event) -> Result<()> {
         let required_size = protocol::compute_length(event)?;
 
         let mut reserved = self.inner.reserve(required_size)?;
