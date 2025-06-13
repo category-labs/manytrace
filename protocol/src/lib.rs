@@ -81,12 +81,28 @@ pub struct Instant<'a> {
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[rkyv(compare(PartialEq), derive(Debug))]
-pub enum ControlMessage {
-    Start,
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[rkyv(compare(PartialEq))]
+pub enum ControlMessage<'a> {
+    Start {
+        buffer_size: u64,
+        log_level: LogLevel,
+    },
     Stop,
     Continue,
     Ack,
-    Nack,
+    Nack {
+        #[rkyv(with = InlineAsBox)]
+        error: &'a str,
+    },
 }
 
 pub struct CountingWriter {
@@ -347,11 +363,16 @@ mod tests {
     #[test]
     fn test_control_message_serialization() {
         let messages = [
-            ControlMessage::Start,
+            ControlMessage::Start {
+                buffer_size: 1024,
+                log_level: LogLevel::Info,
+            },
             ControlMessage::Stop,
             ControlMessage::Continue,
             ControlMessage::Ack,
-            ControlMessage::Nack,
+            ControlMessage::Nack {
+                error: "connection failed",
+            },
         ];
 
         for msg in messages {
@@ -360,7 +381,31 @@ mod tests {
             let archived = rkyv::access::<ArchivedControlMessage, rkyv::rancor::Error>(&buf)
                 .expect("failed to access archived control message");
 
-            assert_eq!(*archived, msg, "Archived message should match original");
+            match (&msg, &*archived) {
+                (
+                    ControlMessage::Start {
+                        buffer_size,
+                        log_level,
+                    },
+                    ArchivedControlMessage::Start {
+                        buffer_size: arch_size,
+                        log_level: arch_level,
+                    },
+                ) => {
+                    assert_eq!(*buffer_size, arch_size.to_native());
+                    assert_eq!(*log_level, *arch_level);
+                }
+                (ControlMessage::Stop, ArchivedControlMessage::Stop) => {}
+                (ControlMessage::Continue, ArchivedControlMessage::Continue) => {}
+                (ControlMessage::Ack, ArchivedControlMessage::Ack) => {}
+                (
+                    ControlMessage::Nack { error },
+                    ArchivedControlMessage::Nack { error: arch_error },
+                ) => {
+                    assert_eq!(error.as_bytes(), arch_error.as_bytes());
+                }
+                _ => panic!("mismatched control message variants"),
+            }
         }
     }
 }
