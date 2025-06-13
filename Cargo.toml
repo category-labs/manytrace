@@ -1,5 +1,5 @@
 [workspace]
-members = ["mpscbuf"]
+members = ["mpscbuf", "protocol"]
 resolver = "2"
 
 [workspace.package]

@@ -1,0 +1,16 @@
+[package]
+name = "protocol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rkyv = { version = "0.8.10", features = ["alloc", "bytecheck"] }
+bitcode = "0.6.6"
+
+[dev-dependencies]
+divan = "0.1"
+rstest = "0.22"
+
+[[bench]]
+name = "counter"
+harness = false
