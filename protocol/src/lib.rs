@@ -102,6 +102,7 @@ pub enum ControlMessage<'a> {
     Start {
         buffer_size: u64,
         log_level: LogLevel,
+        keepalive_interval_ns: u64,
     },
     Stop,
     Continue,
@@ -385,7 +386,7 @@ mod tests {
             let archived = rkyv::access::<ArchivedEvent, rkyv::rancor::Error>(&buf)
                 .expect("failed to access archived event");
 
-            match (&event, &*archived) {
+            match (&event, archived) {
                 (Event::Counter(counter), ArchivedEvent::Counter(arch_counter)) => {
                     assert_eq!(counter.name.as_bytes(), arch_counter.name.as_bytes());
                     assert_eq!(counter.value, arch_counter.value.to_native());
@@ -410,6 +411,7 @@ mod tests {
             ControlMessage::Start {
                 buffer_size: 1024,
                 log_level: LogLevel::Info,
+                keepalive_interval_ns: 5_000_000_000,
             },
             ControlMessage::Stop,
             ControlMessage::Continue,
@@ -425,19 +427,22 @@ mod tests {
             let archived = rkyv::access::<ArchivedControlMessage, rkyv::rancor::Error>(&buf)
                 .expect("failed to access archived control message");
 
-            match (&msg, &*archived) {
+            match (&msg, archived) {
                 (
                     ControlMessage::Start {
                         buffer_size,
                         log_level,
+                        keepalive_interval_ns,
                     },
                     ArchivedControlMessage::Start {
                         buffer_size: arch_size,
                         log_level: arch_level,
+                        keepalive_interval_ns: arch_keepalive,
                     },
                 ) => {
                     assert_eq!(*buffer_size, arch_size.to_native());
                     assert_eq!(*log_level, *arch_level);
+                    assert_eq!(*keepalive_interval_ns, arch_keepalive.to_native());
                 }
                 (ControlMessage::Stop, ArchivedControlMessage::Stop) => {}
                 (ControlMessage::Continue, ArchivedControlMessage::Continue) => {}

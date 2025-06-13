@@ -41,7 +41,7 @@ fn create_counter_with_labels(num_labels: usize) -> Counter<'static> {
             3 => {
                 floats.insert(
                     &*Box::leak(format!("float_label_{}", i).into_boxed_str()),
-                    (i as f64) * 3.14,
+                    (i as f64) * std::f64::consts::PI,
                 );
             }
             _ => unreachable!(),

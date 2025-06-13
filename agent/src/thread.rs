@@ -14,6 +14,7 @@ pub fn socket_listener_thread(
     socket_path: String,
     producer: Arc<Mutex<Option<Producer>>>,
     last_continue_ns: Arc<AtomicU64>,
+    keepalive_interval_ns: Arc<AtomicU64>,
 ) -> Result<()> {
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path)?;
@@ -21,10 +22,15 @@ pub fn socket_listener_thread(
 
     loop {
         match listener.accept() {
-            Ok((stream, _)) => {
-                debug!("client connected to agent");
+            Ok((stream, socket)) => {
+                debug!(?socket, "client connected to agent");
 
-                match handle_client_connection(&stream, &producer, &last_continue_ns) {
+                match handle_client_connection(
+                    &stream,
+                    &producer,
+                    &last_continue_ns,
+                    &keepalive_interval_ns,
+                ) {
                     Ok(()) => debug!("client disconnected successfully"),
                     Err(e) => warn!(error = ?e, "error handling client connection"),
                 }
@@ -41,6 +47,7 @@ fn handle_client_connection(
     stream: &std::os::unix::net::UnixStream,
     producer: &Arc<Mutex<Option<Producer>>>,
     last_continue_ns: &Arc<AtomicU64>,
+    keepalive_interval_ns: &Arc<AtomicU64>,
 ) -> Result<()> {
     let mut cmsg_buffer = nix::cmsg_space!([std::os::fd::RawFd; 2]);
     let mut msg_buf = [0u8; 1024];
@@ -67,7 +74,11 @@ fn handle_client_connection(
     debug!("received control message");
 
     match archived_msg {
-        protocol::ArchivedControlMessage::Start { buffer_size, .. } => {
+        protocol::ArchivedControlMessage::Start {
+            buffer_size,
+            keepalive_interval_ns: archived_keepalive_interval_ns,
+            ..
+        } => {
             if producer.lock().is_some() {
                 let nack_msg = ControlMessage::Nack {
                     error: "producer already exists",
@@ -130,6 +141,10 @@ fn handle_client_connection(
 
             *producer.lock() = Some(Producer::from_inner(new_producer));
             last_continue_ns.store(get_timestamp_ns(), Ordering::Relaxed);
+            keepalive_interval_ns.store(
+                archived_keepalive_interval_ns.to_native(),
+                Ordering::Relaxed,
+            );
             debug!("producer initialized");
 
             let ack_msg = ControlMessage::Ack;

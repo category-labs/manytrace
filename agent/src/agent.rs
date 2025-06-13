@@ -11,6 +11,7 @@ pub struct Agent {
     producer: Arc<Mutex<Option<Producer>>>,
     #[allow(dead_code)]
     last_continue_ns: Arc<AtomicU64>,
+    keepalive_interval_ns: Arc<AtomicU64>,
     _socket_thread: JoinHandle<Result<()>>,
     socket_path: String,
 }
@@ -19,19 +20,27 @@ impl Agent {
     pub fn new(socket_path: String) -> Result<Self> {
         let producer = Arc::new(Mutex::new(None));
         let last_continue_ns = Arc::new(AtomicU64::new(0));
+        let keepalive_interval_ns = Arc::new(AtomicU64::new(0));
         let producer_clone = producer.clone();
         let last_continue_clone = last_continue_ns.clone();
+        let keepalive_interval_clone = keepalive_interval_ns.clone();
         let socket_path_clone = socket_path.clone();
 
         let socket_thread = thread::Builder::new()
             .name("agent-listener".to_string())
             .spawn(move || {
-                socket_listener_thread(socket_path_clone, producer_clone, last_continue_clone)
+                socket_listener_thread(
+                    socket_path_clone,
+                    producer_clone,
+                    last_continue_clone,
+                    keepalive_interval_clone,
+                )
             })?;
 
         Ok(Agent {
             producer,
             last_continue_ns,
+            keepalive_interval_ns,
             _socket_thread: socket_thread,
             socket_path,
         })
@@ -44,7 +53,26 @@ impl Agent {
     pub fn submit(&self, event: &Event) -> Result<()> {
         let producer = self.producer.lock();
         match producer.as_ref() {
-            Some(producer) => producer.submit(event),
+            Some(producer) => {
+                let last_continue = self
+                    .last_continue_ns
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let current_time = crate::get_timestamp_ns();
+
+                let keepalive_interval = self
+                    .keepalive_interval_ns
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let keepalive_timeout = keepalive_interval * 2;
+
+                if keepalive_interval > 0
+                    && last_continue > 0
+                    && current_time.saturating_sub(last_continue) > keepalive_timeout
+                {
+                    return Err(crate::AgentError::NotEnabled);
+                }
+
+                producer.submit(event)
+            }
             None => Err(crate::AgentError::NotEnabled),
         }
     }
@@ -130,7 +158,9 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
-        client.start(&consumer, LogLevel::Debug).unwrap();
+        client
+            .start(&consumer, LogLevel::Debug, 5_000_000_000)
+            .unwrap();
         assert!(client.enabled());
     }
 
@@ -142,11 +172,13 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client1 = AgentClient::new(temp_socket_path.clone());
-        client1.start(&consumer, LogLevel::Debug).unwrap();
+        client1
+            .start(&consumer, LogLevel::Debug, 5_000_000_000)
+            .unwrap();
         assert!(client1.enabled());
 
         let mut client2 = AgentClient::new(temp_socket_path);
-        let result = client2.start(&consumer, LogLevel::Debug);
+        let result = client2.start(&consumer, LogLevel::Debug, 5_000_000_000);
         assert!(result.is_err());
         assert!(!client2.enabled());
     }
@@ -159,7 +191,9 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
-        client.start(&consumer, LogLevel::Debug).unwrap();
+        client
+            .start(&consumer, LogLevel::Debug, 5_000_000_000)
+            .unwrap();
         assert!(client.enabled());
 
         client.send_continue().unwrap();
@@ -175,7 +209,9 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
-        client.start(&consumer, LogLevel::Debug).unwrap();
+        client
+            .start(&consumer, LogLevel::Debug, 5_000_000_000)
+            .unwrap();
 
         thread::sleep(Duration::from_millis(10));
 
@@ -187,6 +223,42 @@ mod tests {
             pid: 2,
             labels: Labels::new(),
         });
+
+        agent.submit(&event).unwrap();
+    }
+
+    #[rstest]
+    fn test_keepalive_timeout(temp_socket_path: String, consumer: Consumer) {
+        init_tracing();
+        let agent = Agent::new(temp_socket_path.clone()).unwrap();
+
+        wait_for_socket(&temp_socket_path);
+
+        let mut client = AgentClient::new(temp_socket_path);
+        client
+            .start(&consumer, LogLevel::Debug, 10_000_000)
+            .unwrap();
+
+        thread::sleep(Duration::from_millis(10));
+
+        let event = Event::Counter(Counter {
+            name: "test_metric",
+            value: 123.456,
+            timestamp: 1234567890,
+            tid: 1,
+            pid: 2,
+            labels: Labels::new(),
+        });
+
+        agent.submit(&event).unwrap();
+
+        thread::sleep(Duration::from_millis(25));
+
+        let result = agent.submit(&event);
+        assert!(result.is_err());
+
+        client.keepalive().unwrap();
+        thread::sleep(Duration::from_millis(10));
 
         agent.submit(&event).unwrap();
     }

@@ -20,12 +20,18 @@ impl AgentClient {
         }
     }
 
-    pub fn start(&mut self, consumer: &Consumer, log_level: LogLevel) -> Result<()> {
+    pub fn start(
+        &mut self,
+        consumer: &Consumer,
+        log_level: LogLevel,
+        keepalive_interval_ns: u64,
+    ) -> Result<()> {
         let stream = UnixStream::connect(&self.socket_path)?;
 
         let start_msg = ProtocolControlMessage::Start {
             buffer_size: consumer.data_size() as u64,
             log_level,
+            keepalive_interval_ns,
         };
 
         let serialized_len = protocol::compute_length(&start_msg)?;
@@ -107,5 +113,13 @@ impl AgentClient {
 
     pub fn enabled(&self) -> bool {
         self.stream.is_some()
+    }
+
+    pub fn keepalive(&self) -> Result<()> {
+        if self.enabled() {
+            self.send_continue()
+        } else {
+            Err(AgentError::NotEnabled)
+        }
     }
 }
