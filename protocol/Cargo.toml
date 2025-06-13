@@ -1,15 +1,15 @@
 [package]
 name = "protocol"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
-rkyv = { version = "0.8.10", features = ["alloc", "bytecheck"] }
-bitcode = "0.6.6"
+rkyv.workspace = true
+bitcode.workspace = true
 
 [dev-dependencies]
-divan = "0.1"
-rstest = "0.22"
+divan.workspace = true
+rstest.workspace = true
 
 [[bench]]
 name = "counter"
