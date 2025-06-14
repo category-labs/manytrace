@@ -7,6 +7,7 @@ use std::thread::{self, JoinHandle};
 use crate::epoll_thread::epoll_listener_thread;
 use crate::{Producer, Result};
 
+/// Server that listens for client connections and receives events.
 pub struct Agent {
     producer: Arc<ArcSwapOption<Producer>>,
     socket_thread: Option<JoinHandle<Result<()>>>,
@@ -15,6 +16,7 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Create a new agent listening on the given socket path.
     pub fn new(socket_path: String) -> Result<Self> {
         Self::with_timeout(
             socket_path,
@@ -22,6 +24,7 @@ impl Agent {
         )
     }
 
+    /// Create a new agent with custom client keepalive timeout.
     pub fn with_timeout(socket_path: String, timeout_ms: u16) -> Result<Self> {
         let producer = Arc::new(ArcSwapOption::empty());
         let producer_clone = producer.clone();
@@ -48,10 +51,12 @@ impl Agent {
         })
     }
 
+    /// Check if a client is currently connected.
     pub fn enabled(&self) -> bool {
         self.producer.load().is_some()
     }
 
+    /// Submit an event to connected clients.
     pub fn submit(&self, event: &Event) -> Result<()> {
         let producer = self.producer.load();
         match producer.as_ref() {
@@ -60,6 +65,7 @@ impl Agent {
         }
     }
 
+    /// Gracefully shut down the agent and wait for thread termination.
     pub fn wait_terminated(&mut self) -> Result<()> {
         self.shutdown.store(true, Ordering::Relaxed);
         if let Some(thread) = self.socket_thread.take() {

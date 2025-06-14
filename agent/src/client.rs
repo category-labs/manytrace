@@ -10,6 +10,7 @@ use crate::{AgentError, Result};
 
 const CLIENT_READ_TIMEOUT_MS: u16 = 5000;
 
+/// Client that connects to an agent and sends events.
 pub struct AgentClient {
     socket_path: String,
     stream: Option<UnixStream>,
@@ -62,6 +63,7 @@ impl AgentClient {
 }
 
 impl AgentClient {
+    /// Create a new client for the given socket path.
     pub fn new(socket_path: String) -> Self {
         AgentClient {
             socket_path,
@@ -69,6 +71,7 @@ impl AgentClient {
         }
     }
 
+    /// Connect to the agent and share the consumer's memory.
     pub fn start(&mut self, consumer: &Consumer, log_level: LogLevel) -> Result<()> {
         let stream = UnixStream::connect(&self.socket_path)?;
 
@@ -148,6 +151,7 @@ impl AgentClient {
         }
     }
 
+    /// Disconnect from the agent.
     pub fn stop(&mut self) -> Result<()> {
         if let Some(stream) = &self.stream {
             let stop_msg = ProtocolControlMessage::Stop;
@@ -185,6 +189,9 @@ impl AgentClient {
         Ok(())
     }
 
+    /// Send keepalive message to the agent.
+    ///
+    /// Should be called periodically to prevent timeout disconnection.
     pub fn send_continue(&self) -> Result<()> {
         if let Some(stream) = &self.stream {
             let continue_msg = ProtocolControlMessage::Continue;
@@ -211,10 +218,12 @@ impl AgentClient {
         Ok(())
     }
 
+    /// Check if connected to the agent.
     pub fn enabled(&self) -> bool {
         self.stream.is_some()
     }
 
+    /// Alias for send_continue().
     pub fn keepalive(&self) -> Result<()> {
         if self.enabled() {
             self.send_continue()

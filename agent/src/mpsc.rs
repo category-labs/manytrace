@@ -3,6 +3,7 @@ use protocol::{ArchivedEvent, Event};
 
 use crate::Result;
 
+/// Producer end of the shared memory channel.
 pub struct Producer {
     inner: MpscProducer,
 }
@@ -23,28 +24,34 @@ impl Producer {
     }
 }
 
+/// Consumer end of the shared memory channel.
 pub struct Consumer {
     inner: MpscConsumer,
 }
 
 impl Consumer {
+    /// Create a new consumer with the given buffer size.
     pub fn new(buffer_size: usize) -> Result<Self> {
         let inner = MpscConsumer::new(buffer_size)?;
         Ok(Consumer { inner })
     }
 
+    /// Iterate over available events.
     pub fn iter(&mut self) -> EventIter {
         EventIter::new(&mut self.inner)
     }
 
+    /// Block until new events are available.
     pub fn wait(&mut self) -> Result<()> {
         Ok(self.inner.wait()?)
     }
 
+    /// Number of events available to read.
     pub fn available_records(&self) -> u64 {
         self.inner.available_records()
     }
 
+    /// Number of events dropped due to buffer overflow.
     pub fn dropped(&self) -> u64 {
         self.inner.dropped()
     }
@@ -62,6 +69,7 @@ impl Consumer {
     }
 }
 
+/// Iterator over events in the consumer buffer.
 pub struct EventIter<'a> {
     iterator: ConsumerIter<'a>,
 }
@@ -74,9 +82,11 @@ impl<'a> EventIter<'a> {
     }
 }
 
+/// A single event record from the buffer.
 pub struct Record<'a>(mpscbuf::Record<'a>);
 
 impl<'a> Record<'a> {
+    /// Access the event data.
     pub fn as_event(&self) -> std::result::Result<&ArchivedEvent, rkyv::rancor::Error> {
         rkyv::access::<ArchivedEvent, rkyv::rancor::Error>(self.0.as_slice())
     }
