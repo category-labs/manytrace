@@ -1,17 +1,13 @@
 use arc_swap::ArcSwapOption;
 use protocol::Event;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use crate::thread::socket_listener_thread;
+use crate::epoll_thread::epoll_listener_thread;
 use crate::{Producer, Result};
 
 pub struct Agent {
     producer: Arc<ArcSwapOption<Producer>>,
-    #[allow(dead_code)]
-    last_continue_ns: Arc<AtomicU64>,
-    keepalive_interval_ns: Arc<AtomicU64>,
     _socket_thread: JoinHandle<Result<()>>,
     socket_path: String,
 }
@@ -19,28 +15,15 @@ pub struct Agent {
 impl Agent {
     pub fn new(socket_path: String) -> Result<Self> {
         let producer = Arc::new(ArcSwapOption::empty());
-        let last_continue_ns = Arc::new(AtomicU64::new(0));
-        let keepalive_interval_ns = Arc::new(AtomicU64::new(0));
         let producer_clone = producer.clone();
-        let last_continue_clone = last_continue_ns.clone();
-        let keepalive_interval_clone = keepalive_interval_ns.clone();
         let socket_path_clone = socket_path.clone();
 
         let socket_thread = thread::Builder::new()
             .name("agent-listener".to_string())
-            .spawn(move || {
-                socket_listener_thread(
-                    socket_path_clone,
-                    producer_clone,
-                    last_continue_clone,
-                    keepalive_interval_clone,
-                )
-            })?;
+            .spawn(move || epoll_listener_thread(socket_path_clone, producer_clone))?;
 
         Ok(Agent {
             producer,
-            last_continue_ns,
-            keepalive_interval_ns,
             _socket_thread: socket_thread,
             socket_path,
         })
@@ -53,26 +36,7 @@ impl Agent {
     pub fn submit(&self, event: &Event) -> Result<()> {
         let producer = self.producer.load();
         match producer.as_ref() {
-            Some(producer) => {
-                let last_continue = self
-                    .last_continue_ns
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                let current_time = crate::get_timestamp_ns();
-
-                let keepalive_interval = self
-                    .keepalive_interval_ns
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                let keepalive_timeout = keepalive_interval * 2;
-
-                if keepalive_interval > 0
-                    && last_continue > 0
-                    && current_time.saturating_sub(last_continue) > keepalive_timeout
-                {
-                    return Err(crate::AgentError::NotEnabled);
-                }
-
-                producer.submit(event)
-            }
+            Some(producer) => producer.submit(event),
             None => Err(crate::AgentError::NotEnabled),
         }
     }
@@ -256,10 +220,5 @@ mod tests {
 
         let result = agent.submit(&event);
         assert!(result.is_err());
-
-        client.keepalive().unwrap();
-        thread::sleep(Duration::from_millis(10));
-
-        agent.submit(&event).unwrap();
     }
 }

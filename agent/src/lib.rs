@@ -3,8 +3,8 @@ use thiserror::Error;
 
 pub mod agent;
 pub mod client;
+pub mod epoll_thread;
 pub mod mpsc;
-pub mod thread;
 
 pub use agent::Agent;
 pub use client::AgentClient;

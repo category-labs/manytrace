@@ -9,7 +9,7 @@ license.workspace = true
 mpscbuf = { path = "../mpscbuf" }
 protocol = { path = "../protocol" }
 arc-swap.workspace = true
-nix = { workspace = true, features = ["socket", "uio"] }
+nix = { workspace = true, features = ["socket", "uio", "event"] }
 rkyv.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
