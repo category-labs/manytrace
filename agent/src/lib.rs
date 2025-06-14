@@ -6,7 +6,6 @@ pub mod agent_state;
 pub mod client;
 pub mod epoll_thread;
 pub mod mpsc;
-pub mod state;
 
 pub use agent::Agent;
 pub use client::AgentClient;
@@ -28,7 +27,7 @@ pub enum AgentError {
 
 pub type Result<T> = std::result::Result<T, AgentError>;
 
-pub fn get_timestamp_ns() -> u64 {
+pub(crate) fn get_timestamp_ns() -> u64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,

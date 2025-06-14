@@ -4,8 +4,7 @@ use std::os::unix::net::UnixListener;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::agent_state::{AgentState, EpollAction};
-use crate::state::CLIENT_TIMEOUT_NS;
+use crate::agent_state::{AgentState, EpollAction, CLIENT_TIMEOUT_NS};
 use crate::{Producer, Result};
 
 const LISTENER_TOKEN: u64 = 0;

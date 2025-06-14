@@ -49,15 +49,15 @@ impl Consumer {
         self.inner.dropped()
     }
 
-    pub fn memory_fd(&self) -> std::os::fd::BorrowedFd {
+    pub(crate) fn memory_fd(&self) -> std::os::fd::BorrowedFd {
         self.inner.memory_fd()
     }
 
-    pub fn notification_fd(&self) -> std::os::fd::BorrowedFd {
+    pub(crate) fn notification_fd(&self) -> std::os::fd::BorrowedFd {
         self.inner.notification_fd()
     }
 
-    pub fn data_size(&self) -> usize {
+    pub(crate) fn data_size(&self) -> usize {
         self.inner.data_size()
     }
 }

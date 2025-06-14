@@ -207,7 +207,7 @@ mod tests {
         agent.submit(&event).unwrap();
 
         thread::sleep(
-            Duration::from_nanos(crate::state::CLIENT_TIMEOUT_NS) + Duration::from_millis(100),
+            Duration::from_nanos(crate::agent_state::CLIENT_TIMEOUT_NS) + Duration::from_millis(100),
         );
 
         let result = agent.submit(&event);
