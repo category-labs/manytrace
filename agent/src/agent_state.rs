@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::{get_timestamp_ns, AgentError, Producer, Result};
+use crate::{AgentError, Producer, Result};
 
 pub(crate) struct AgentContext {
     pub(crate) another_started: bool,
@@ -46,10 +46,10 @@ impl AgentClientState {
         self.stream
     }
 
-    pub(crate) fn timer(&self) -> bool {
+    pub(crate) fn timer(&self, timeout_ns: u64) -> bool {
         let current_time = get_timestamp_ns();
         let elapsed = current_time.saturating_sub(self.timestamp_ns);
-        elapsed <= CLIENT_TIMEOUT_NS
+        elapsed <= timeout_ns
     }
 
     pub(crate) fn handle_message(&mut self, ctx: &mut AgentContext) -> MessageResult {
@@ -68,7 +68,10 @@ pub(crate) enum MessageResult {
     Error(AgentError),
 }
 
-fn handle_pending_state(client_state: &mut AgentClientState, ctx: &mut AgentContext) -> MessageResult {
+fn handle_pending_state(
+    client_state: &mut AgentClientState,
+    ctx: &mut AgentContext,
+) -> MessageResult {
     match handle_start_message(&client_state.stream, ctx) {
         Ok(Some(producer)) => {
             client_state.timestamp_ns = get_timestamp_ns();
@@ -265,16 +268,11 @@ pub(crate) struct AgentState {
     started_client: Option<(u64, AgentClientState)>,
     next_client_id: u64,
     ctx: AgentContext,
-}
-
-impl Default for AgentState {
-    fn default() -> Self {
-        Self::new()
-    }
+    timeout_ns: u64,
 }
 
 impl AgentState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(timeout_ms: u16) -> Self {
         AgentState {
             pending_clients: HashMap::new(),
             started_client: None,
@@ -282,6 +280,7 @@ impl AgentState {
             ctx: AgentContext {
                 another_started: false,
             },
+            timeout_ns: timeout_ms as u64 * 1_000_000,
         }
     }
 
@@ -362,14 +361,27 @@ impl AgentState {
     }
 
     pub(crate) fn timer(&mut self, producer: &Arc<ArcSwapOption<Producer>>) -> Vec<EpollAction> {
+        debug!(
+            pending_clients = self.pending_clients.len(),
+            has_started_client = self.started_client.is_some(),
+            "timer check invoked"
+        );
         let mut actions = Vec::new();
 
         let mut timed_out_clients = Vec::new();
         for (client_id, client) in self.pending_clients.iter() {
-            if !client.timer() {
+            let is_alive = client.timer(self.timeout_ns);
+            debug!(
+                client_id,
+                is_alive,
+                elapsed_ns = get_timestamp_ns().saturating_sub(client.timestamp_ns),
+                timeout_ns = self.timeout_ns,
+                "checking pending client timer"
+            );
+            if !is_alive {
                 debug!(
                     client_id,
-                    timeout_s = CLIENT_TIMEOUT_NS / 1_000_000_000,
+                    timeout_s = self.timeout_ns / 1_000_000_000,
                     "pending client timed out, disconnecting"
                 );
                 timed_out_clients.push(*client_id);
@@ -389,10 +401,18 @@ impl AgentState {
         }
 
         if let Some((client_id, client)) = &self.started_client {
-            if !client.timer() {
+            let is_alive = client.timer(self.timeout_ns);
+            debug!(
+                client_id,
+                is_alive,
+                elapsed_ns = get_timestamp_ns().saturating_sub(client.timestamp_ns),
+                timeout_ns = self.timeout_ns,
+                "checking started client timer"
+            );
+            if !is_alive {
                 debug!(
                     client_id,
-                    timeout_s = CLIENT_TIMEOUT_NS / 1_000_000_000,
+                    timeout_s = self.timeout_ns / 1_000_000_000,
                     "started client timed out, disconnecting"
                 );
                 if let Some((_, client)) = self.started_client.take() {
@@ -408,6 +428,17 @@ impl AgentState {
 
         actions
     }
+}
+
+fn get_timestamp_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
 #[cfg(test)]
@@ -503,17 +534,18 @@ mod tests {
         let (_client, server) = create_socket_pair();
         let client_state = AgentClientState::new(1, server);
 
-        assert!(client_state.timer());
+        assert!(client_state.timer(2_000_000_000));
     }
 
     #[rstest]
     fn test_agent_client_state_timer_after_timeout() {
         let (_client, server) = create_socket_pair();
         let mut client_state = AgentClientState::new(1, server);
+        let timeout_ns = 2_000_000_000;
 
-        client_state.timestamp_ns = get_timestamp_ns() - CLIENT_TIMEOUT_NS - 1;
+        client_state.timestamp_ns = get_timestamp_ns() - timeout_ns - 1;
 
-        assert!(!client_state.timer());
+        assert!(!client_state.timer(timeout_ns));
     }
 
     #[rstest]
@@ -635,27 +667,18 @@ mod tests {
 
     #[rstest]
     fn test_agent_state_new() {
-        let agent_state = AgentState::new();
+        let agent_state = AgentState::new(2000);
 
         assert!(agent_state.pending_clients.is_empty());
         assert!(agent_state.started_client.is_none());
         assert_eq!(agent_state.next_client_id, 1);
         assert!(!agent_state.ctx.another_started);
-    }
-
-    #[rstest]
-    fn test_agent_state_default() {
-        let agent_state = AgentState::default();
-
-        assert!(agent_state.pending_clients.is_empty());
-        assert!(agent_state.started_client.is_none());
-        assert_eq!(agent_state.next_client_id, 1);
-        assert!(!agent_state.ctx.another_started);
+        assert_eq!(agent_state.timeout_ns, 2_000_000_000);
     }
 
     #[rstest]
     fn test_accept_connection() {
-        let mut agent_state = AgentState::new();
+        let mut agent_state = AgentState::new(2000);
         let (_client, server) = create_socket_pair();
 
         let result = agent_state.accept_connection(server);
@@ -670,7 +693,7 @@ mod tests {
 
     #[rstest]
     fn test_accept_multiple_connections() {
-        let mut agent_state = AgentState::new();
+        let mut agent_state = AgentState::new(2000);
         let (_client1, server1) = create_socket_pair();
         let (_client2, server2) = create_socket_pair();
 
@@ -690,7 +713,7 @@ mod tests {
 
     #[rstest]
     fn test_handle_event_nonexistent_client() {
-        let mut agent_state = AgentState::new();
+        let mut agent_state = AgentState::new(2000);
         let producer = Arc::new(ArcSwapOption::empty());
 
         let result = agent_state.handle_event(999, &producer);
@@ -700,7 +723,7 @@ mod tests {
 
     #[rstest]
     fn test_handle_event_pending_client_continue() {
-        let mut agent_state = AgentState::new();
+        let mut agent_state = AgentState::new(2000);
         let (_client, server) = create_socket_pair();
         let producer = Arc::new(ArcSwapOption::empty());
 
@@ -714,7 +737,7 @@ mod tests {
 
     #[rstest]
     fn test_timer_no_clients() {
-        let mut agent_state = AgentState::new();
+        let mut agent_state = AgentState::new(2000);
         let producer = Arc::new(ArcSwapOption::empty());
 
         let actions = agent_state.timer(&producer);
@@ -724,7 +747,7 @@ mod tests {
 
     #[rstest]
     fn test_timer_pending_client_not_timed_out() {
-        let mut agent_state = AgentState::new();
+        let mut agent_state = AgentState::new(2000);
         let (_client, server) = create_socket_pair();
         let producer = Arc::new(ArcSwapOption::empty());
 

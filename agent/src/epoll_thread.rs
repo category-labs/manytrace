@@ -1,10 +1,11 @@
 use arc_swap::ArcSwapOption;
 use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags, EpollTimeout};
 use std::os::unix::net::UnixListener;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::agent_state::{AgentState, EpollAction, CLIENT_TIMEOUT_NS};
+use crate::agent_state::{AgentState, EpollAction};
 use crate::{Producer, Result};
 
 const LISTENER_TOKEN: u64 = 0;
@@ -12,6 +13,8 @@ const LISTENER_TOKEN: u64 = 0;
 pub fn epoll_listener_thread(
     socket_path: String,
     producer: Arc<ArcSwapOption<Producer>>,
+    shutdown: Arc<AtomicBool>,
+    timeout_ms: u16,
 ) -> Result<()> {
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path)?;
@@ -26,10 +29,13 @@ pub fn epoll_listener_thread(
     )?;
 
     let mut events = vec![EpollEvent::empty(); 10];
-    let mut agent_state = AgentState::new();
-    let timeout_ms = (CLIENT_TIMEOUT_NS / 1_000_000) as u16;
+    let mut agent_state = AgentState::new(timeout_ms);
     let timeout = EpollTimeout::from(timeout_ms);
     loop {
+        if shutdown.load(Ordering::Relaxed) {
+            debug!("agent listener thread shutting down");
+            break;
+        }
         let nfds = epoll.wait(&mut events, timeout)?;
         for event in events.iter().take(nfds) {
             match event.data() {
@@ -77,4 +83,5 @@ pub fn epoll_listener_thread(
             }
         }
     }
+    Ok(())
 }

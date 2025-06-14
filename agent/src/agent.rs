@@ -1,5 +1,6 @@
 use arc_swap::ArcSwapOption;
 use protocol::Event;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
@@ -8,24 +9,42 @@ use crate::{Producer, Result};
 
 pub struct Agent {
     producer: Arc<ArcSwapOption<Producer>>,
-    _socket_thread: JoinHandle<Result<()>>,
+    socket_thread: Option<JoinHandle<Result<()>>>,
     socket_path: String,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl Agent {
     pub fn new(socket_path: String) -> Result<Self> {
+        Self::with_timeout(
+            socket_path,
+            (crate::agent_state::CLIENT_TIMEOUT_NS / 1_000_000) as u16,
+        )
+    }
+
+    pub fn with_timeout(socket_path: String, timeout_ms: u16) -> Result<Self> {
         let producer = Arc::new(ArcSwapOption::empty());
         let producer_clone = producer.clone();
         let socket_path_clone = socket_path.clone();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
 
         let socket_thread = thread::Builder::new()
-            .name("agent-listener".to_string())
-            .spawn(move || epoll_listener_thread(socket_path_clone, producer_clone))?;
+            .name("manytrace-agent".to_string())
+            .spawn(move || {
+                epoll_listener_thread(
+                    socket_path_clone,
+                    producer_clone,
+                    shutdown_clone,
+                    timeout_ms,
+                )
+            })?;
 
         Ok(Agent {
             producer,
-            _socket_thread: socket_thread,
+            socket_thread: Some(socket_thread),
             socket_path,
+            shutdown,
         })
     }
 
@@ -40,10 +59,21 @@ impl Agent {
             None => Err(crate::AgentError::NotEnabled),
         }
     }
+
+    pub fn wait_terminated(&mut self) -> Result<()> {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.socket_thread.take() {
+            thread
+                .join()
+                .map_err(|_| crate::AgentError::Io(std::io::Error::other("Thread panicked")))??;
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Agent {
     fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
         let _ = std::fs::remove_file(&self.socket_path);
     }
 }
@@ -66,7 +96,7 @@ mod tests {
             tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
                 )
                 .init();
         });
@@ -186,7 +216,8 @@ mod tests {
     #[rstest]
     fn test_keepalive_timeout(temp_socket_path: String, consumer: Consumer) {
         init_tracing();
-        let agent = Agent::new(temp_socket_path.clone()).unwrap();
+        let timeout_ms = 100;
+        let agent = Agent::with_timeout(temp_socket_path.clone(), timeout_ms).unwrap();
 
         wait_for_socket(&temp_socket_path);
 
@@ -206,11 +237,24 @@ mod tests {
 
         agent.submit(&event).unwrap();
 
-        thread::sleep(
-            Duration::from_nanos(crate::agent_state::CLIENT_TIMEOUT_NS) + Duration::from_millis(100),
-        );
+        thread::sleep(Duration::from_millis(timeout_ms as u64 * 2));
 
         let result = agent.submit(&event);
         assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_wait_terminated(temp_socket_path: String, consumer: Consumer) {
+        init_tracing();
+        let mut agent = Agent::with_timeout(temp_socket_path.clone(), 100).unwrap();
+
+        wait_for_socket(&temp_socket_path);
+
+        let mut client = AgentClient::new(temp_socket_path.clone());
+        client.start(&consumer, LogLevel::Debug).unwrap();
+
+        thread::sleep(Duration::from_millis(10));
+
+        agent.wait_terminated().unwrap();
     }
 }
