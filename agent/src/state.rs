@@ -85,6 +85,10 @@ fn handle_started_state(client_state: &mut ClientState) -> MessageResult {
     match handle_client_message(&client_state.stream) {
         Ok(Some(protocol::ControlMessage::Stop)) => {
             debug!(client_id = client_state.client_id, "client sent stop");
+            let ack_msg = ControlMessage::Ack;
+            if let Err(e) = send_message(&client_state.stream, &ack_msg) {
+                warn!(client_id = client_state.client_id, error = ?e, "failed to send stop ack");
+            }
             MessageResult::Disconnect
         }
         Ok(Some(protocol::ControlMessage::Continue)) => {
@@ -94,6 +98,10 @@ fn handle_started_state(client_state: &mut ClientState) -> MessageResult {
                 timestamp = client_state.timestamp_ns,
                 "client sent continue"
             );
+            let ack_msg = ControlMessage::Ack;
+            if let Err(e) = send_message(&client_state.stream, &ack_msg) {
+                warn!(client_id = client_state.client_id, error = ?e, "failed to send continue ack");
+            }
             MessageResult::Continue
         }
         Ok(Some(_)) => {
