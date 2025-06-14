@@ -26,12 +26,25 @@ impl AgentClient {
         log_level: LogLevel,
         keepalive_interval_ns: u64,
     ) -> Result<()> {
+        self.start_with_options(consumer, log_level, keepalive_interval_ns, false)
+    }
+
+    pub fn start_with_options(
+        &mut self,
+        consumer: &Consumer,
+        log_level: LogLevel,
+        keepalive_interval_ns: u64,
+        force: bool,
+    ) -> Result<()> {
         let stream = UnixStream::connect(&self.socket_path)?;
 
+        let pid = std::process::id() as i32;
         let start_msg = ProtocolControlMessage::Start {
             buffer_size: consumer.data_size() as u64,
             log_level,
             keepalive_interval_ns,
+            pid,
+            force,
         };
 
         let serialized_len = protocol::compute_length(&start_msg)?;

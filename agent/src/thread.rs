@@ -20,6 +20,8 @@ pub fn socket_listener_thread(
     let listener = UnixListener::bind(&socket_path)?;
     debug!(socket_path = %socket_path, "agent listening on unix socket");
 
+    let mut current_client_pid: i32 = 0;
+
     loop {
         match listener.accept() {
             Ok((stream, socket)) => {
@@ -30,6 +32,7 @@ pub fn socket_listener_thread(
                     &producer,
                     &last_continue_ns,
                     &keepalive_interval_ns,
+                    &mut current_client_pid,
                 ) {
                     Ok(()) => debug!("client disconnected successfully"),
                     Err(e) => warn!(error = ?e, "error handling client connection"),
@@ -48,6 +51,7 @@ fn handle_client_connection(
     producer: &Arc<ArcSwapOption<Producer>>,
     last_continue_ns: &Arc<AtomicU64>,
     keepalive_interval_ns: &Arc<AtomicU64>,
+    current_client_pid: &mut i32,
 ) -> Result<()> {
     let mut cmsg_buffer = nix::cmsg_space!([std::os::fd::RawFd; 2]);
     let mut msg_buf = [0u8; 1024];
@@ -77,19 +81,26 @@ fn handle_client_connection(
         protocol::ArchivedControlMessage::Start {
             buffer_size,
             keepalive_interval_ns: archived_keepalive_interval_ns,
+            pid: archived_pid,
+            force: archived_force,
             ..
         } => {
-            if producer.load().is_some() {
-                let nack_msg = ControlMessage::Nack {
-                    error: "producer already exists",
-                };
+            let pid = archived_pid.to_native();
+            let force = *archived_force;
+
+            if producer.load().is_some() && !force {
+                let error_msg = format!("producer already exists for pid {}", *current_client_pid);
+                let nack_msg = ControlMessage::Nack { error: &error_msg };
                 let serialized = protocol::compute_length(&nack_msg)?;
                 let mut buf = vec![0u8; serialized];
                 protocol::serialize_to_buf(&nack_msg, &mut buf)?;
 
                 use nix::sys::socket::send;
                 send(stream.as_fd().as_raw_fd(), &buf, MsgFlags::empty())?;
-                debug!("sent nack - producer already exists");
+                debug!(
+                    "sent nack - producer already exists for pid {}",
+                    *current_client_pid
+                );
                 return Ok(());
             }
 
@@ -145,7 +156,8 @@ fn handle_client_connection(
                 archived_keepalive_interval_ns.to_native(),
                 Ordering::Relaxed,
             );
-            debug!("producer initialized");
+            *current_client_pid = pid;
+            debug!("producer initialized for pid {}", pid);
 
             let ack_msg = ControlMessage::Ack;
             let serialized = protocol::compute_length(&ack_msg)?;
