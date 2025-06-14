@@ -1,6 +1,6 @@
+use arc_swap::ArcSwapOption;
 use mpscbuf::{Producer as MpscProducer, WakeupStrategy};
 use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
-use parking_lot::Mutex;
 use protocol::ControlMessage;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixListener;
@@ -12,7 +12,7 @@ use crate::{get_timestamp_ns, AgentError, Producer, Result};
 
 pub fn socket_listener_thread(
     socket_path: String,
-    producer: Arc<Mutex<Option<Producer>>>,
+    producer: Arc<ArcSwapOption<Producer>>,
     last_continue_ns: Arc<AtomicU64>,
     keepalive_interval_ns: Arc<AtomicU64>,
 ) -> Result<()> {
@@ -45,7 +45,7 @@ pub fn socket_listener_thread(
 
 fn handle_client_connection(
     stream: &std::os::unix::net::UnixStream,
-    producer: &Arc<Mutex<Option<Producer>>>,
+    producer: &Arc<ArcSwapOption<Producer>>,
     last_continue_ns: &Arc<AtomicU64>,
     keepalive_interval_ns: &Arc<AtomicU64>,
 ) -> Result<()> {
@@ -79,7 +79,7 @@ fn handle_client_connection(
             keepalive_interval_ns: archived_keepalive_interval_ns,
             ..
         } => {
-            if producer.lock().is_some() {
+            if producer.load().is_some() {
                 let nack_msg = ControlMessage::Nack {
                     error: "producer already exists",
                 };
@@ -139,7 +139,7 @@ fn handle_client_connection(
                 WakeupStrategy::Forced,
             )?;
 
-            *producer.lock() = Some(Producer::from_inner(new_producer));
+            producer.store(Some(Arc::new(Producer::from_inner(new_producer))));
             last_continue_ns.store(get_timestamp_ns(), Ordering::Relaxed);
             keepalive_interval_ns.store(
                 archived_keepalive_interval_ns.to_native(),
@@ -182,7 +182,7 @@ fn handle_client_connection(
 
 fn handle_agent_connection(
     stream: std::os::unix::net::UnixStream,
-    producer: Arc<Mutex<Option<Producer>>>,
+    producer: Arc<ArcSwapOption<Producer>>,
     last_continue_ns: Arc<AtomicU64>,
 ) -> Result<()> {
     loop {
@@ -212,7 +212,7 @@ fn handle_agent_connection(
 
         match archived_msg {
             protocol::ArchivedControlMessage::Stop => {
-                *producer.lock() = None;
+                producer.store(None);
                 last_continue_ns.store(0, Ordering::Relaxed);
                 debug!("producer cleared on stop message");
                 break;

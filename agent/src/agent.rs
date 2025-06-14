@@ -1,4 +1,4 @@
-use parking_lot::Mutex;
+use arc_swap::ArcSwapOption;
 use protocol::Event;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use crate::thread::socket_listener_thread;
 use crate::{Producer, Result};
 
 pub struct Agent {
-    producer: Arc<Mutex<Option<Producer>>>,
+    producer: Arc<ArcSwapOption<Producer>>,
     #[allow(dead_code)]
     last_continue_ns: Arc<AtomicU64>,
     keepalive_interval_ns: Arc<AtomicU64>,
@@ -18,7 +18,7 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(socket_path: String) -> Result<Self> {
-        let producer = Arc::new(Mutex::new(None));
+        let producer = Arc::new(ArcSwapOption::empty());
         let last_continue_ns = Arc::new(AtomicU64::new(0));
         let keepalive_interval_ns = Arc::new(AtomicU64::new(0));
         let producer_clone = producer.clone();
@@ -47,11 +47,11 @@ impl Agent {
     }
 
     pub fn enabled(&self) -> bool {
-        self.producer.lock().is_some()
+        self.producer.load().is_some()
     }
 
     pub fn submit(&self, event: &Event) -> Result<()> {
-        let producer = self.producer.lock();
+        let producer = self.producer.load();
         match producer.as_ref() {
             Some(producer) => {
                 let last_continue = self
