@@ -184,7 +184,7 @@ fn handle_start_message(
                 memory_fd,
                 notification_fd,
                 buffer_size,
-                WakeupStrategy::Forced,
+                WakeupStrategy::NoWakeup,
             )?;
 
             let producer = Arc::new(Producer::from_inner(new_producer));
