@@ -79,6 +79,21 @@ pub struct Instant<'a> {
     pub labels: Labels<'a>,
 }
 
+#[derive(Archive, Serialize, Deserialize)]
+pub struct ThreadName<'a> {
+    #[rkyv(with = InlineAsBox)]
+    pub name: &'a str,
+    pub tid: i32,
+    pub pid: i32,
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+pub struct ProcessName<'a> {
+    #[rkyv(with = InlineAsBox)]
+    pub name: &'a str,
+    pub pid: i32,
+}
+
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[rkyv(compare(PartialEq), derive(Debug))]
 pub enum LogLevel {
@@ -94,6 +109,8 @@ pub enum Event<'a> {
     Counter(Counter<'a>),
     Span(Span<'a>),
     Instant(Instant<'a>),
+    ThreadName(ThreadName<'a>),
+    ProcessName(ProcessName<'a>),
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -398,6 +415,43 @@ mod tests {
                 (Event::Instant(instant), ArchivedEvent::Instant(arch_instant)) => {
                     assert_eq!(instant.name.as_bytes(), arch_instant.name.as_bytes());
                     assert_eq!(instant.timestamp, arch_instant.timestamp.to_native());
+                }
+                _ => panic!("mismatched event variants"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_thread_process_name_serialization() {
+        let thread_name = ThreadName {
+            name: "worker-thread-1",
+            tid: 12345,
+            pid: 67890,
+        };
+
+        let process_name = ProcessName {
+            name: "my-process",
+            pid: 67890,
+        };
+
+        let thread_event = Event::ThreadName(thread_name);
+        let process_event = Event::ProcessName(process_name);
+
+        for event in [thread_event, process_event] {
+            let buf =
+                to_bytes_in::<_, Error>(&event, Vec::new()).expect("event serialization failed");
+            let archived = rkyv::access::<ArchivedEvent, rkyv::rancor::Error>(&buf)
+                .expect("failed to access archived event");
+
+            match (&event, archived) {
+                (Event::ThreadName(thread), ArchivedEvent::ThreadName(arch_thread)) => {
+                    assert_eq!(thread.name.as_bytes(), arch_thread.name.as_bytes());
+                    assert_eq!(thread.tid, arch_thread.tid.to_native());
+                    assert_eq!(thread.pid, arch_thread.pid.to_native());
+                }
+                (Event::ProcessName(process), ArchivedEvent::ProcessName(arch_process)) => {
+                    assert_eq!(process.name.as_bytes(), arch_process.name.as_bytes());
+                    assert_eq!(process.pid, arch_process.pid.to_native());
                 }
                 _ => panic!("mismatched event variants"),
             }

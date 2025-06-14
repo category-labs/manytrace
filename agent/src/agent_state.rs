@@ -8,6 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
+use crate::agent::ProducerState;
 use crate::{AgentError, Producer, Result};
 
 pub(crate) struct AgentContext {
@@ -62,7 +63,7 @@ impl AgentClientState {
 
 pub(crate) enum MessageResult {
     Continue,
-    Started(Arc<Producer>),
+    Started(Arc<ProducerState>),
     Disconnect,
     #[allow(dead_code)]
     Error(AgentError),
@@ -72,12 +73,12 @@ fn handle_pending_state(
     client_state: &mut AgentClientState,
     ctx: &mut AgentContext,
 ) -> MessageResult {
-    match handle_start_message(&client_state.stream, ctx) {
-        Ok(Some(producer)) => {
+    match handle_start_message(&client_state.stream, ctx, client_state.client_id) {
+        Ok(Some(producer_state_result)) => {
             client_state.timestamp_ns = get_timestamp_ns();
             client_state.state = State::Started;
             debug!(client_id = client_state.client_id, "client started");
-            MessageResult::Started(producer)
+            MessageResult::Started(producer_state_result)
         }
         Ok(None) => MessageResult::Continue,
         Err(e) => {
@@ -132,7 +133,8 @@ fn handle_started_state(client_state: &mut AgentClientState) -> MessageResult {
 fn handle_start_message(
     stream: &UnixStream,
     ctx: &mut AgentContext,
-) -> Result<Option<Arc<Producer>>> {
+    client_id: u64,
+) -> Result<Option<Arc<ProducerState>>> {
     let mut cmsg_buffer = nix::cmsg_space!([RawFd; 2]);
     let mut msg_buf = [0u8; 1024];
     let mut iov = [std::io::IoSliceMut::new(&mut msg_buf)];
@@ -202,14 +204,15 @@ fn handle_start_message(
             )?;
 
             let producer = Arc::new(Producer::from_inner(new_producer));
+            let producer_state = Arc::new(ProducerState::new(producer, client_id));
 
-            debug!(buffer_size, "producer initialized");
+            debug!(buffer_size, client_id, "producer initialized");
 
             let ack_msg = ControlMessage::Ack;
             send_message(stream, &ack_msg)?;
             debug!("sent ack - producer initialized");
 
-            Ok(Some(producer))
+            Ok(Some(producer_state))
         }
         _ => {
             debug!("expected Start message as first message");
@@ -307,7 +310,7 @@ impl AgentState {
     pub(crate) fn handle_event(
         &mut self,
         event_data: u64,
-        producer: &Arc<ArcSwapOption<Producer>>,
+        producer_state: &Arc<ArcSwapOption<ProducerState>>,
     ) -> Option<EpollAction> {
         if let Some(mut client) = self.pending_clients.remove(&event_data) {
             match client.handle_message(&mut self.ctx) {
@@ -315,8 +318,8 @@ impl AgentState {
                     self.pending_clients.insert(event_data, client);
                     None
                 }
-                MessageResult::Started(new_producer) => {
-                    producer.store(Some(new_producer));
+                MessageResult::Started(new_producer_state) => {
+                    producer_state.store(Some(new_producer_state));
                     self.ctx.another_started = true;
                     self.started_client = Some((event_data, client));
                     None
@@ -344,7 +347,7 @@ impl AgentState {
                         }
                         MessageResult::Disconnect | MessageResult::Error(_) => {
                             let fd = client.into_stream();
-                            producer.store(None);
+                            producer_state.store(None);
                             self.ctx.another_started = false;
                             Some(EpollAction::Delete { fd })
                         }
@@ -360,7 +363,10 @@ impl AgentState {
         }
     }
 
-    pub(crate) fn timer(&mut self, producer: &Arc<ArcSwapOption<Producer>>) -> Vec<EpollAction> {
+    pub(crate) fn timer(
+        &mut self,
+        producer_state: &Arc<ArcSwapOption<ProducerState>>,
+    ) -> Vec<EpollAction> {
         debug!(
             pending_clients = self.pending_clients.len(),
             has_started_client = self.started_client.is_some(),
@@ -421,7 +427,7 @@ impl AgentState {
                     });
                 }
                 self.started_client = None;
-                producer.store(None);
+                producer_state.store(None);
                 self.ctx.another_started = false;
             }
         }

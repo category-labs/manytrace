@@ -5,14 +5,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
+use crate::agent::ProducerState;
 use crate::agent_state::{AgentState, EpollAction};
-use crate::{Producer, Result};
+use crate::Result;
 
 const LISTENER_TOKEN: u64 = 0;
 
 pub fn epoll_listener_thread(
     socket_path: String,
-    producer: Arc<ArcSwapOption<Producer>>,
+    producer_state: Arc<ArcSwapOption<ProducerState>>,
     shutdown: Arc<AtomicBool>,
     timeout_ms: u16,
 ) -> Result<()> {
@@ -59,7 +60,7 @@ pub fn epoll_listener_thread(
                     }
                 },
                 client_id if client_id != LISTENER_TOKEN => {
-                    if let Some(action) = agent_state.handle_event(client_id, &producer) {
+                    if let Some(action) = agent_state.handle_event(client_id, &producer_state) {
                         match action {
                             EpollAction::Add { fd, token } => {
                                 epoll.add(fd, EpollEvent::new(EpollFlags::EPOLLIN, token))?;
@@ -73,7 +74,7 @@ pub fn epoll_listener_thread(
                 _ => {}
             }
         }
-        let timeout_actions = agent_state.timer(&producer);
+        let timeout_actions = agent_state.timer(&producer_state);
         for action in timeout_actions {
             match action {
                 EpollAction::Add { .. } => {}

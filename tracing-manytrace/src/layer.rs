@@ -1,14 +1,21 @@
 use agent::Agent;
-use protocol::{Event, Instant, Labels, Span, SpanEvent};
+use protocol::{Event, Instant, Labels, ProcessName, Span, SpanEvent, ThreadName};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{Id, Level, Metadata, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
+use std::cell::Cell;
+use std::sync::OnceLock;
+
 thread_local! {
     static THREAD_ID: i32 = unsafe { libc::syscall(libc::SYS_gettid) as i32 };
+    static THREAD_CLIENT_ID: Cell<Option<u64>> = const { Cell::new(None) };
 }
+
+static PROCESS_ID: OnceLock<i32> = OnceLock::new();
+static PROCESS_CLIENT_ID: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
 
 pub(crate) struct StoredLabels {
     pub labels: Labels<'static>,
@@ -20,7 +27,7 @@ fn get_thread_id() -> i32 {
 }
 
 fn get_process_id() -> i32 {
-    std::process::id() as i32
+    *PROCESS_ID.get_or_init(|| std::process::id() as i32)
 }
 
 fn get_timestamp() -> u64 {
@@ -43,6 +50,53 @@ impl ManytraceLayer {
         Self { agent }
     }
 
+    fn maybe_emit_thread_process_names(&self) {
+        let current_client_id = self.agent.client_id();
+        if current_client_id.is_none() {
+            return;
+        }
+
+        let pid = get_process_id();
+
+        if let Ok(mut stored_client_id) = PROCESS_CLIENT_ID.lock() {
+            if *stored_client_id != current_client_id {
+                *stored_client_id = current_client_id;
+
+                let process_name = std::env::current_exe()
+                    .ok()
+                    .and_then(|path| path.file_name().map(|s| s.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| format!("process-{}", pid));
+
+                let event = Event::ProcessName(ProcessName {
+                    name: &process_name,
+                    pid,
+                });
+
+                let _ = self.agent.submit(&event);
+            }
+        }
+
+        THREAD_CLIENT_ID.with(|stored| {
+            if stored.get() != current_client_id {
+                stored.set(current_client_id);
+
+                let tid = get_thread_id();
+                let thread_name = std::thread::current()
+                    .name()
+                    .map(|s| s.to_owned())
+                    .unwrap_or_else(|| format!("thread-{}", tid));
+
+                let event = Event::ThreadName(ThreadName {
+                    name: &thread_name,
+                    tid,
+                    pid,
+                });
+
+                let _ = self.agent.submit(&event);
+            }
+        });
+    }
+
     fn metadata_to_labels<'b>(&self, metadata: &'b Metadata<'b>) -> Labels<'b> {
         let mut strings = HashMap::new();
         strings.insert("target", metadata.target());
@@ -56,19 +110,9 @@ impl ManytraceLayer {
                 Level::TRACE => "trace",
             },
         );
-        if let Some(module_path) = metadata.module_path() {
-            strings.insert("module_path", module_path);
-        }
-        if let Some(file) = metadata.file() {
-            strings.insert("file", file);
-        }
-        let mut ints = HashMap::new();
-        if let Some(line) = metadata.line() {
-            ints.insert("line", line as i64);
-        }
         Labels {
             strings,
-            ints,
+            ints: HashMap::new(),
             bools: HashMap::new(),
             floats: HashMap::new(),
         }
@@ -100,6 +144,8 @@ where
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
             if let Some(stored_labels) = span.extensions().get::<StoredLabels>() {
+                self.maybe_emit_thread_process_names();
+
                 let metadata = span.metadata();
                 let span_id = id.into_u64();
                 let span_event = Span {
@@ -158,6 +204,9 @@ where
         if !self.agent.enabled() {
             return;
         }
+
+        self.maybe_emit_thread_process_names();
+
         let metadata = event.metadata();
         let labels = self.metadata_to_labels(metadata);
         let labels_static = unsafe { std::mem::transmute::<Labels<'_>, Labels<'static>>(labels) };

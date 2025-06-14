@@ -7,9 +7,24 @@ use std::thread::{self, JoinHandle};
 use crate::epoll_thread::epoll_listener_thread;
 use crate::{Producer, Result};
 
+/// Producer state containing producer and client_id.
+pub(crate) struct ProducerState {
+    producer: Arc<Producer>,
+    client_id: u64,
+}
+
+impl ProducerState {
+    pub(crate) fn new(producer: Arc<Producer>, client_id: u64) -> Self {
+        Self {
+            producer,
+            client_id,
+        }
+    }
+}
+
 /// Server that listens for client connections and receives events.
 pub struct Agent {
-    producer: Arc<ArcSwapOption<Producer>>,
+    producer_state: Arc<ArcSwapOption<ProducerState>>,
     socket_thread: Option<JoinHandle<Result<()>>>,
     socket_path: String,
     shutdown: Arc<AtomicBool>,
@@ -26,8 +41,8 @@ impl Agent {
 
     /// Create a new agent with custom client keepalive timeout.
     pub fn with_timeout(socket_path: String, timeout_ms: u16) -> Result<Self> {
-        let producer = Arc::new(ArcSwapOption::empty());
-        let producer_clone = producer.clone();
+        let producer_state = Arc::new(ArcSwapOption::empty());
+        let producer_state_clone = producer_state.clone();
         let socket_path_clone = socket_path.clone();
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
@@ -37,14 +52,14 @@ impl Agent {
             .spawn(move || {
                 epoll_listener_thread(
                     socket_path_clone,
-                    producer_clone,
+                    producer_state_clone,
                     shutdown_clone,
                     timeout_ms,
                 )
             })?;
 
         Ok(Agent {
-            producer,
+            producer_state,
             socket_thread: Some(socket_thread),
             socket_path,
             shutdown,
@@ -53,16 +68,21 @@ impl Agent {
 
     /// Check if a client is currently connected.
     pub fn enabled(&self) -> bool {
-        self.producer.load().is_some()
+        self.producer_state.load().is_some()
     }
 
     /// Submit an event to connected clients.
     pub fn submit(&self, event: &Event) -> Result<()> {
-        let producer = self.producer.load();
-        match producer.as_ref() {
-            Some(producer) => producer.submit(event),
+        let producer_state = self.producer_state.load();
+        match producer_state.as_ref() {
+            Some(state) => state.producer.submit(event),
             None => Err(crate::AgentError::NotEnabled),
         }
+    }
+
+    /// Get the current client_id if available.
+    pub fn client_id(&self) -> Option<u64> {
+        self.producer_state.load().as_ref().map(|s| s.client_id)
     }
 
     /// Gracefully shut down the agent and wait for thread termination.
