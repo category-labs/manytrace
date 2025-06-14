@@ -1,4 +1,5 @@
 use crate::Consumer;
+use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags, EpollTimeout};
 use nix::sys::socket::{recv, sendmsg, ControlMessage, MsgFlags};
 use protocol::{ControlMessage as ProtocolControlMessage, LogLevel};
 use std::os::fd::AsRawFd;
@@ -6,6 +7,8 @@ use std::os::unix::net::UnixStream;
 use tracing::debug;
 
 use crate::{AgentError, Result};
+
+const CLIENT_READ_TIMEOUT_MS: u16 = 5000;
 
 pub struct AgentClient {
     socket_path: String,
@@ -22,6 +25,8 @@ impl AgentClient {
 
     pub fn start(&mut self, consumer: &Consumer, log_level: LogLevel) -> Result<()> {
         let stream = UnixStream::connect(&self.socket_path)?;
+
+        stream.set_nonblocking(true)?;
 
         let start_msg = ProtocolControlMessage::Start {
             buffer_size: consumer.data_size() as u64,
@@ -47,8 +52,31 @@ impl AgentClient {
             None,
         )?;
 
+        let epoll = Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC)?;
+        epoll.add(&stream, EpollEvent::new(EpollFlags::EPOLLIN, 0))?;
+
+        let mut events = vec![EpollEvent::empty(); 1];
+        let timeout = EpollTimeout::from(CLIENT_READ_TIMEOUT_MS);
+
+        let nfds = epoll.wait(&mut events, timeout)?;
+        if nfds == 0 {
+            return Err(AgentError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timeout waiting for agent response",
+            )));
+        }
+
         let mut response_buf = [0u8; 1024];
-        let bytes_read = recv(stream.as_raw_fd(), &mut response_buf, MsgFlags::empty())?;
+        let bytes_read = match recv(stream.as_raw_fd(), &mut response_buf, MsgFlags::empty()) {
+            Ok(n) => n,
+            Err(nix::errno::Errno::EAGAIN) => {
+                return Err(AgentError::Io(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "no data available",
+                )))
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         let archived_response = rkyv::access::<
             protocol::ArchivedControlMessage,
@@ -82,10 +110,23 @@ impl AgentClient {
             protocol::serialize_to_buf(&stop_msg, &mut buf)?;
 
             let iov = [std::io::IoSlice::new(&buf)];
-            sendmsg::<()>(stream.as_raw_fd(), &iov, &[], MsgFlags::empty(), None)?;
-
-            debug!("sent stop message to agent");
-            self.stream = None;
+            match sendmsg::<()>(stream.as_raw_fd(), &iov, &[], MsgFlags::empty(), None) {
+                Ok(_) => {
+                    debug!("sent stop message to agent");
+                    self.stream = None;
+                }
+                Err(nix::errno::Errno::EAGAIN) => {
+                    return Err(AgentError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "stop message would block",
+                    )))
+                }
+                Err(nix::errno::Errno::EPIPE) => {
+                    debug!("connection already closed");
+                    self.stream = None;
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         Ok(())
     }
@@ -98,9 +139,18 @@ impl AgentClient {
             protocol::serialize_to_buf(&continue_msg, &mut buf)?;
 
             let iov = [std::io::IoSlice::new(&buf)];
-            sendmsg::<()>(stream.as_raw_fd(), &iov, &[], MsgFlags::empty(), None)?;
-
-            debug!("sent continue message to agent");
+            match sendmsg::<()>(stream.as_raw_fd(), &iov, &[], MsgFlags::empty(), None) {
+                Ok(_) => {
+                    debug!("sent continue message to agent");
+                }
+                Err(nix::errno::Errno::EAGAIN) => {
+                    return Err(AgentError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "continue message would block",
+                    )))
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         Ok(())
     }

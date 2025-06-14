@@ -87,12 +87,8 @@ impl AgentState {
             if *id == event_data {
                 if let Some((_, mut client)) = self.started_client.take() {
                     match client.handle_message(&mut self.ctx) {
-                        MessageResult::Continue => {
-                            None
-                        }
-                        MessageResult::Started(_) => {
-                            None
-                        }
+                        MessageResult::Continue => None,
+                        MessageResult::Started(_) => None,
                         MessageResult::Disconnect | MessageResult::Error(_) => {
                             let fd = client.into_stream();
                             producer.store(None);
