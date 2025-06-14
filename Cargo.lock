@@ -1398,6 +1398,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-manytrace"
+version = "0.1.0"
+dependencies = [
+ "agent",
+ "libc",
+ "protocol",
+ "rstest",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"

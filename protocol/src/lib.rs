@@ -9,7 +9,7 @@ use rkyv::ser::{Positional, Writer};
 use rkyv::with::{Identity, InlineAsBox, MapKV};
 use rkyv::{Archive, Deserialize, Serialize};
 
-#[derive(Archive, Deserialize, Serialize)]
+#[derive(Archive, Deserialize, Serialize, Clone)]
 pub struct Labels<'a> {
     #[rkyv(with = MapKV<InlineAsBox, InlineAsBox>)]
     pub strings: HashMap<&'a str, &'a str>,

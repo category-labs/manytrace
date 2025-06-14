@@ -1,5 +1,5 @@
 [workspace]
-members = ["mpscbuf", "protocol", "agent"]
+members = ["mpscbuf", "protocol", "agent", "tracing-manytrace"]
 resolver = "2"
 
 [workspace.package]
