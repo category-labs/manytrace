@@ -2,7 +2,7 @@ use agent::Agent;
 use protocol::{Event, Instant, Labels, ProcessName, Span, SpanEvent, ThreadName};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{Id, Level, Metadata, Subscriber};
+use tracing::{Id, Metadata, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
@@ -97,21 +97,9 @@ impl ManytraceLayer {
         });
     }
 
-    fn metadata_to_labels<'b>(&self, metadata: &'b Metadata<'b>) -> Labels<'b> {
-        let mut strings = HashMap::new();
-        strings.insert("target", metadata.target());
-        strings.insert(
-            "level",
-            match *metadata.level() {
-                Level::ERROR => "error",
-                Level::WARN => "warn",
-                Level::INFO => "info",
-                Level::DEBUG => "debug",
-                Level::TRACE => "trace",
-            },
-        );
+    fn create_labels(&self, _metadata: &'static Metadata<'static>) -> Labels<'static> {
         Labels {
-            strings,
+            strings: HashMap::new(),
             ints: HashMap::new(),
             bools: HashMap::new(),
             floats: HashMap::new(),
@@ -128,11 +116,10 @@ where
             return;
         }
         let metadata = attrs.metadata();
-        let labels = self.metadata_to_labels(metadata);
-        let labels_static = unsafe { std::mem::transmute::<Labels<'_>, Labels<'static>>(labels) };
+        let labels = self.create_labels(metadata);
         let strings_storage = HashMap::new();
         let mut stored_labels = StoredLabels {
-            labels: labels_static,
+            labels,
             strings_storage,
         };
         attrs.record(&mut stored_labels);
@@ -208,10 +195,9 @@ where
         self.maybe_emit_thread_process_names();
 
         let metadata = event.metadata();
-        let labels = self.metadata_to_labels(metadata);
-        let labels_static = unsafe { std::mem::transmute::<Labels<'_>, Labels<'static>>(labels) };
+        let labels = self.create_labels(metadata);
         let mut stored_labels = StoredLabels {
-            labels: labels_static,
+            labels,
             strings_storage: HashMap::new(),
         };
         event.record(&mut stored_labels);
@@ -220,7 +206,7 @@ where
             timestamp: get_timestamp(),
             tid: get_thread_id(),
             pid: get_process_id(),
-            labels: stored_labels.labels,
+            labels: stored_labels.labels.clone(),
         };
         let _ = self.agent.submit(&Event::Instant(instant));
     }

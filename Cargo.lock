@@ -1402,6 +1402,7 @@ name = "tracing-manytrace"
 version = "0.1.0"
 dependencies = [
  "agent",
+ "divan",
  "libc",
  "protocol",
  "rstest",

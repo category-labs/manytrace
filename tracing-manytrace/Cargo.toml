@@ -13,3 +13,8 @@ libc = { workspace = true }
 [dev-dependencies]
 rstest = { workspace = true }
 tempfile = { workspace = true }
+divan = { workspace = true }
+
+[[bench]]
+name = "on_event"
+harness = false
