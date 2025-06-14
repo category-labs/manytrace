@@ -2,9 +2,11 @@ use mpscbuf::MpscBufError;
 use thiserror::Error;
 
 pub mod agent;
+pub mod agent_state;
 pub mod client;
 pub mod epoll_thread;
 pub mod mpsc;
+pub mod state;
 
 pub use agent::Agent;
 pub use client::AgentClient;

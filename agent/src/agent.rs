@@ -122,9 +122,7 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
-        client
-            .start(&consumer, LogLevel::Debug, 5_000_000_000)
-            .unwrap();
+        client.start(&consumer, LogLevel::Debug).unwrap();
         assert!(client.enabled());
     }
 
@@ -136,13 +134,11 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client1 = AgentClient::new(temp_socket_path.clone());
-        client1
-            .start(&consumer, LogLevel::Debug, 5_000_000_000)
-            .unwrap();
+        client1.start(&consumer, LogLevel::Debug).unwrap();
         assert!(client1.enabled());
 
         let mut client2 = AgentClient::new(temp_socket_path);
-        let result = client2.start(&consumer, LogLevel::Debug, 5_000_000_000);
+        let result = client2.start(&consumer, LogLevel::Debug);
         assert!(result.is_err());
         assert!(!client2.enabled());
     }
@@ -155,9 +151,7 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
-        client
-            .start(&consumer, LogLevel::Debug, 5_000_000_000)
-            .unwrap();
+        client.start(&consumer, LogLevel::Debug).unwrap();
         assert!(client.enabled());
 
         client.send_continue().unwrap();
@@ -173,9 +167,7 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
-        client
-            .start(&consumer, LogLevel::Debug, 5_000_000_000)
-            .unwrap();
+        client.start(&consumer, LogLevel::Debug).unwrap();
 
         thread::sleep(Duration::from_millis(10));
 
@@ -199,9 +191,7 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
-        client
-            .start(&consumer, LogLevel::Debug, 10_000_000)
-            .unwrap();
+        client.start(&consumer, LogLevel::Debug).unwrap();
 
         thread::sleep(Duration::from_millis(10));
 
@@ -216,7 +206,9 @@ mod tests {
 
         agent.submit(&event).unwrap();
 
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(
+            Duration::from_nanos(crate::state::CLIENT_TIMEOUT_NS) + Duration::from_millis(100),
+        );
 
         let result = agent.submit(&event);
         assert!(result.is_err());

@@ -102,9 +102,6 @@ pub enum ControlMessage<'a> {
     Start {
         buffer_size: u64,
         log_level: LogLevel,
-        keepalive_interval_ns: u64,
-        pid: i32,
-        force: bool,
     },
     Stop,
     Continue,
@@ -413,9 +410,6 @@ mod tests {
             ControlMessage::Start {
                 buffer_size: 1024,
                 log_level: LogLevel::Info,
-                keepalive_interval_ns: 5_000_000_000,
-                pid: 12345,
-                force: false,
             },
             ControlMessage::Stop,
             ControlMessage::Continue,
@@ -436,23 +430,14 @@ mod tests {
                     ControlMessage::Start {
                         buffer_size,
                         log_level,
-                        keepalive_interval_ns,
-                        pid,
-                        force,
                     },
                     ArchivedControlMessage::Start {
                         buffer_size: arch_size,
                         log_level: arch_level,
-                        keepalive_interval_ns: arch_keepalive,
-                        pid: arch_pid,
-                        force: arch_force,
                     },
                 ) => {
                     assert_eq!(*buffer_size, arch_size.to_native());
                     assert_eq!(*log_level, *arch_level);
-                    assert_eq!(*keepalive_interval_ns, arch_keepalive.to_native());
-                    assert_eq!(*pid, arch_pid.to_native());
-                    assert_eq!(*force, *arch_force);
                 }
                 (ControlMessage::Stop, ArchivedControlMessage::Stop) => {}
                 (ControlMessage::Continue, ArchivedControlMessage::Continue) => {}
