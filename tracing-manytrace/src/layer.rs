@@ -12,13 +12,13 @@ pub(crate) struct SpanData {
     pub start_timestamp: u64,
 }
 
-fn get_timestamp() -> u64 {
+fn get_timestamp(clock_id: libc::clockid_t) -> u64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
     unsafe {
-        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+        libc::clock_gettime(clock_id, &mut ts);
     }
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
 }
@@ -72,7 +72,7 @@ where
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
             if let Some(span_data) = span.extensions_mut().get_mut::<SpanData>() {
-                span_data.start_timestamp = get_timestamp();
+                span_data.start_timestamp = get_timestamp(self.agent.clock_id());
             }
         }
     }
@@ -86,7 +86,7 @@ where
                     name: metadata.name(),
                     span_id,
                     start_timestamp: span_data.start_timestamp,
-                    end_timestamp: get_timestamp(),
+                    end_timestamp: get_timestamp(self.agent.clock_id()),
                     tid: self.get_thread_id(),
                     pid: self.get_process_id(),
                     labels: Cow::Borrowed(&span_data.labels),
@@ -108,7 +108,7 @@ where
             start_timestamp: 0,
         };
         event.record(&mut span_data);
-        let timestamp = get_timestamp();
+        let timestamp = get_timestamp(self.agent.clock_id());
         let span_event = Span {
             name: metadata.name(),
             span_id: timestamp,
