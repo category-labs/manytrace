@@ -98,16 +98,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for i in 0..4 {
         let running_clone = running.clone();
-        let handle = thread::spawn(move || {
-            worker_loop(i, running_clone);
-        });
+        let handle = thread::Builder::new()
+            .name(format!("worker-{}", i))
+            .spawn(move || {
+                worker_loop(i, running_clone);
+            })?;
         handles.push(handle);
     }
 
     let running_clone = running.clone();
-    let monitor_handle = thread::spawn(move || {
-        monitoring_thread(running_clone);
-    });
+    let monitor_handle = thread::Builder::new()
+        .name("monitor".to_string())
+        .spawn(move || {
+            monitoring_thread(running_clone);
+        })?;
     handles.push(monitor_handle);
 
     info!("all threads started, press ctrl-c to stop");
