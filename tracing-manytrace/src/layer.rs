@@ -30,13 +30,13 @@ fn get_process_id() -> i32 {
     *PROCESS_ID.get_or_init(|| std::process::id() as i32)
 }
 
-fn get_timestamp() -> u64 {
+fn get_timestamp(agent: &Agent) -> u64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
     unsafe {
-        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+        libc::clock_gettime(agent.clock_id(), &mut ts);
     }
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
 }
@@ -139,7 +139,7 @@ where
                     name: metadata.name(),
                     span_id,
                     event: SpanEvent::Start,
-                    timestamp: get_timestamp(),
+                    timestamp: get_timestamp(&self.agent),
                     tid: get_thread_id(),
                     pid: get_process_id(),
                     labels: stored_labels.labels.clone(),
@@ -158,7 +158,7 @@ where
                     name: metadata.name(),
                     span_id,
                     event: SpanEvent::Stop,
-                    timestamp: get_timestamp(),
+                    timestamp: get_timestamp(&self.agent),
                     tid: get_thread_id(),
                     pid: get_process_id(),
                     labels: stored_labels.labels.clone(),
@@ -177,7 +177,7 @@ where
                     name: metadata.name(),
                     span_id,
                     event: SpanEvent::End,
-                    timestamp: get_timestamp(),
+                    timestamp: get_timestamp(&self.agent),
                     tid: get_thread_id(),
                     pid: get_process_id(),
                     labels: stored_labels.labels.clone(),
@@ -203,7 +203,7 @@ where
         event.record(&mut stored_labels);
         let instant = Instant {
             name: metadata.name(),
-            timestamp: get_timestamp(),
+            timestamp: get_timestamp(&self.agent),
             tid: get_thread_id(),
             pid: get_process_id(),
             labels: stored_labels.labels.clone(),

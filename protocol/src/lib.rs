@@ -113,12 +113,21 @@ pub enum Event<'a> {
     ProcessName(ProcessName<'a>),
 }
 
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[rkyv(compare(PartialEq), derive(Debug))]
+pub enum TimestampType {
+    Monotonic,
+    Boottime,
+    Realtime,
+}
+
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[rkyv(compare(PartialEq))]
 pub enum ControlMessage<'a> {
     Start {
         buffer_size: u64,
         log_level: LogLevel,
+        timestamp_type: TimestampType,
     },
     Stop,
     Continue,
@@ -464,6 +473,7 @@ mod tests {
             ControlMessage::Start {
                 buffer_size: 1024,
                 log_level: LogLevel::Info,
+                timestamp_type: TimestampType::Monotonic,
             },
             ControlMessage::Stop,
             ControlMessage::Continue,
@@ -484,14 +494,17 @@ mod tests {
                     ControlMessage::Start {
                         buffer_size,
                         log_level,
+                        timestamp_type,
                     },
                     ArchivedControlMessage::Start {
                         buffer_size: arch_size,
                         log_level: arch_level,
+                        timestamp_type: arch_timestamp_type,
                     },
                 ) => {
                     assert_eq!(*buffer_size, arch_size.to_native());
                     assert_eq!(*log_level, *arch_level);
+                    assert_eq!(*timestamp_type, *arch_timestamp_type);
                 }
                 (ControlMessage::Stop, ArchivedControlMessage::Stop) => {}
                 (ControlMessage::Continue, ArchivedControlMessage::Continue) => {}

@@ -11,14 +11,20 @@ use crate::{Producer, Result};
 pub(crate) struct ProducerState {
     producer: Arc<Producer>,
     client_id: u64,
+    clock_id: libc::clockid_t,
 }
 
 impl ProducerState {
-    pub(crate) fn new(producer: Arc<Producer>, client_id: u64) -> Self {
+    pub(crate) fn new(producer: Arc<Producer>, client_id: u64, clock_id: libc::clockid_t) -> Self {
         Self {
             producer,
             client_id,
+            clock_id,
         }
+    }
+
+    pub(crate) fn clock_id(&self) -> libc::clockid_t {
+        self.clock_id
     }
 }
 
@@ -83,6 +89,15 @@ impl Agent {
     /// Get the current client_id if available.
     pub fn client_id(&self) -> Option<u64> {
         self.producer_state.load().as_ref().map(|s| s.client_id)
+    }
+
+    /// Get the current clock ID if a client is connected.
+    pub fn clock_id(&self) -> libc::clockid_t {
+        self.producer_state
+            .load()
+            .as_ref()
+            .map(|s| s.clock_id())
+            .unwrap_or(libc::CLOCK_MONOTONIC)
     }
 
     /// Gracefully shut down the agent and wait for thread termination.

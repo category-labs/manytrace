@@ -1,7 +1,7 @@
 use arc_swap::ArcSwapOption;
 use mpscbuf::{Producer as MpscProducer, WakeupStrategy};
 use nix::sys::socket::{recvmsg, sendmsg, ControlMessageOwned, MsgFlags};
-use protocol::ControlMessage;
+use protocol::{ControlMessage, TimestampType};
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -10,6 +10,14 @@ use tracing::{debug, warn};
 
 use crate::agent::ProducerState;
 use crate::{AgentError, Producer, Result};
+
+fn timestamp_type_to_clock_id(timestamp_type: TimestampType) -> libc::clockid_t {
+    match timestamp_type {
+        TimestampType::Monotonic => libc::CLOCK_MONOTONIC,
+        TimestampType::Boottime => libc::CLOCK_BOOTTIME,
+        TimestampType::Realtime => libc::CLOCK_REALTIME,
+    }
+}
 
 pub(crate) struct AgentContext {
     pub(crate) another_started: bool,
@@ -159,7 +167,11 @@ fn handle_start_message(
         rkyv::access::<protocol::ArchivedControlMessage, rkyv::rancor::Error>(received_data)?;
 
     match archived_msg {
-        protocol::ArchivedControlMessage::Start { buffer_size, .. } => {
+        protocol::ArchivedControlMessage::Start {
+            buffer_size,
+            timestamp_type,
+            ..
+        } => {
             if ctx.another_started {
                 let error_msg = "another client already started".to_string();
                 let nack_msg = ControlMessage::Nack { error: &error_msg };
@@ -169,6 +181,12 @@ fn handle_start_message(
             }
 
             let buffer_size = buffer_size.to_native() as usize;
+            let timestamp_type_native = match *timestamp_type {
+                protocol::ArchivedTimestampType::Monotonic => TimestampType::Monotonic,
+                protocol::ArchivedTimestampType::Boottime => TimestampType::Boottime,
+                protocol::ArchivedTimestampType::Realtime => TimestampType::Realtime,
+            };
+            let clock_id = timestamp_type_to_clock_id(timestamp_type_native);
 
             let mut memory_fd: Option<OwnedFd> = None;
             let mut notification_fd: Option<OwnedFd> = None;
@@ -204,7 +222,7 @@ fn handle_start_message(
             )?;
 
             let producer = Arc::new(Producer::from_inner(new_producer));
-            let producer_state = Arc::new(ProducerState::new(producer, client_id));
+            let producer_state = Arc::new(ProducerState::new(producer, client_id, clock_id));
 
             debug!(buffer_size, client_id, "producer initialized");
 
@@ -453,11 +471,12 @@ mod tests {
     use crate::Consumer;
     use arc_swap::ArcSwapOption;
     use protocol::{ControlMessage, LogLevel};
-    use rstest::rstest;
+    use rstest::{fixture, rstest};
     use std::os::unix::net::{UnixListener, UnixStream};
     use tempfile::TempDir;
 
-    fn create_socket_pair() -> (UnixStream, UnixStream) {
+    #[fixture]
+    fn socket_pair() -> (UnixStream, UnixStream) {
         let temp_dir = TempDir::new().unwrap();
         let socket_path = temp_dir.path().join("test.sock");
         let listener = UnixListener::bind(&socket_path).unwrap();
@@ -471,10 +490,23 @@ mod tests {
         (client, server)
     }
 
+    #[fixture]
+    fn test_consumer() -> Consumer {
+        Consumer::new(1024 * 1024).unwrap()
+    }
+
+    #[fixture]
+    fn agent_context() -> AgentContext {
+        AgentContext {
+            another_started: false,
+        }
+    }
+
     fn send_start_message(stream: &UnixStream, buffer_size: u64, log_level: LogLevel) {
         let start_msg = ControlMessage::Start {
             buffer_size,
             log_level,
+            timestamp_type: protocol::TimestampType::Monotonic,
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();
@@ -489,9 +521,22 @@ mod tests {
     }
 
     fn send_start_message_with_fds(stream: &UnixStream, consumer: &Consumer) {
+        send_start_message_with_fds_and_timestamp(
+            stream,
+            consumer,
+            protocol::TimestampType::Monotonic,
+        );
+    }
+
+    fn send_start_message_with_fds_and_timestamp(
+        stream: &UnixStream,
+        consumer: &Consumer,
+        timestamp_type: protocol::TimestampType,
+    ) {
         let start_msg = ControlMessage::Start {
             buffer_size: consumer.data_size() as u64,
             log_level: LogLevel::Debug,
+            timestamp_type,
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();
@@ -524,8 +569,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_agent_client_state_new() {
-        let (_client, server) = create_socket_pair();
+    fn test_agent_client_state_new(socket_pair: (UnixStream, UnixStream)) {
+        let (_client, server) = socket_pair;
         let client_id = 42;
 
         let client_state = AgentClientState::new(client_id, server);
@@ -536,16 +581,16 @@ mod tests {
     }
 
     #[rstest]
-    fn test_agent_client_state_timer_within_timeout() {
-        let (_client, server) = create_socket_pair();
+    fn test_agent_client_state_timer_within_timeout(socket_pair: (UnixStream, UnixStream)) {
+        let (_client, server) = socket_pair;
         let client_state = AgentClientState::new(1, server);
 
         assert!(client_state.timer(2_000_000_000));
     }
 
     #[rstest]
-    fn test_agent_client_state_timer_after_timeout() {
-        let (_client, server) = create_socket_pair();
+    fn test_agent_client_state_timer_after_timeout(socket_pair: (UnixStream, UnixStream)) {
+        let (_client, server) = socket_pair;
         let mut client_state = AgentClientState::new(1, server);
         let timeout_ns = 2_000_000_000;
 
@@ -555,22 +600,22 @@ mod tests {
     }
 
     #[rstest]
-    fn test_pending_state_no_message() {
-        let (_client, server) = create_socket_pair();
+    fn test_pending_state_no_message(
+        socket_pair: (UnixStream, UnixStream),
+        mut agent_context: AgentContext,
+    ) {
+        let (_client, server) = socket_pair;
         let mut client_state = AgentClientState::new(1, server);
-        let mut ctx = AgentContext {
-            another_started: false,
-        };
 
-        let result = client_state.handle_message(&mut ctx);
+        let result = client_state.handle_message(&mut agent_context);
 
         assert!(matches!(result, MessageResult::Continue));
         assert!(matches!(client_state.state, State::Pending));
     }
 
     #[rstest]
-    fn test_pending_state_with_start_no_fds() {
-        let (client, server) = create_socket_pair();
+    fn test_pending_state_with_start_no_fds(socket_pair: (UnixStream, UnixStream)) {
+        let (client, server) = socket_pair;
         let mut client_state = AgentClientState::new(1, server);
         let mut ctx = AgentContext {
             another_started: false,
@@ -585,15 +630,17 @@ mod tests {
     }
 
     #[rstest]
-    fn test_pending_state_successful_start() {
-        let (client, server) = create_socket_pair();
+    fn test_pending_state_successful_start(
+        socket_pair: (UnixStream, UnixStream),
+        test_consumer: Consumer,
+    ) {
+        let (client, server) = socket_pair;
         let mut client_state = AgentClientState::new(1, server);
         let mut ctx = AgentContext {
             another_started: false,
         };
 
-        let consumer = Consumer::new(1024 * 1024).unwrap();
-        send_start_message_with_fds(&client, &consumer);
+        send_start_message_with_fds(&client, &test_consumer);
         std::thread::sleep(std::time::Duration::from_millis(10));
 
         let result = client_state.handle_message(&mut ctx);
@@ -603,15 +650,17 @@ mod tests {
     }
 
     #[rstest]
-    fn test_pending_state_start_with_existing_producer() {
-        let (client, server) = create_socket_pair();
+    fn test_pending_state_start_with_existing_producer(
+        socket_pair: (UnixStream, UnixStream),
+        test_consumer: Consumer,
+    ) {
+        let (client, server) = socket_pair;
         let mut client_state = AgentClientState::new(1, server);
         let mut ctx = AgentContext {
             another_started: true,
         };
 
-        let consumer = Consumer::new(1024 * 1024).unwrap();
-        send_start_message_with_fds(&client, &consumer);
+        send_start_message_with_fds(&client, &test_consumer);
         std::thread::sleep(std::time::Duration::from_millis(10));
 
         let result = client_state.handle_message(&mut ctx);
@@ -621,8 +670,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_started_state_continue_message() {
-        let (client, server) = create_socket_pair();
+    fn test_started_state_continue_message(socket_pair: (UnixStream, UnixStream)) {
+        let (client, server) = socket_pair;
         let mut client_state = AgentClientState::new(1, server);
         client_state.state = State::Started;
         let old_timestamp = client_state.timestamp_ns;
@@ -642,8 +691,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_started_state_stop_message() {
-        let (client, server) = create_socket_pair();
+    fn test_started_state_stop_message(socket_pair: (UnixStream, UnixStream)) {
+        let (client, server) = socket_pair;
         let mut client_state = AgentClientState::new(1, server);
         client_state.state = State::Started;
         let mut ctx = AgentContext {
@@ -658,8 +707,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_started_state_no_message() {
-        let (_client, server) = create_socket_pair();
+    fn test_started_state_no_message(socket_pair: (UnixStream, UnixStream)) {
+        let (_client, server) = socket_pair;
         let mut client_state = AgentClientState::new(1, server);
         client_state.state = State::Started;
         let mut ctx = AgentContext {
@@ -683,9 +732,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_accept_connection() {
+    fn test_accept_connection(socket_pair: (UnixStream, UnixStream)) {
         let mut agent_state = AgentState::new(2000);
-        let (_client, server) = create_socket_pair();
+        let (_client, server) = socket_pair;
 
         let result = agent_state.accept_connection(server);
 
@@ -700,8 +749,24 @@ mod tests {
     #[rstest]
     fn test_accept_multiple_connections() {
         let mut agent_state = AgentState::new(2000);
-        let (_client1, server1) = create_socket_pair();
-        let (_client2, server2) = create_socket_pair();
+
+        // Create first socket pair
+        let temp_dir1 = TempDir::new().unwrap();
+        let socket_path1 = temp_dir1.path().join("test1.sock");
+        let listener1 = UnixListener::bind(&socket_path1).unwrap();
+        let client1 = UnixStream::connect(&socket_path1).unwrap();
+        let (server1, _) = listener1.accept().unwrap();
+        client1.set_nonblocking(true).unwrap();
+        server1.set_nonblocking(true).unwrap();
+
+        // Create second socket pair
+        let temp_dir2 = TempDir::new().unwrap();
+        let socket_path2 = temp_dir2.path().join("test2.sock");
+        let listener2 = UnixListener::bind(&socket_path2).unwrap();
+        let client2 = UnixStream::connect(&socket_path2).unwrap();
+        let (server2, _) = listener2.accept().unwrap();
+        client2.set_nonblocking(true).unwrap();
+        server2.set_nonblocking(true).unwrap();
 
         let result1 = agent_state.accept_connection(server1);
         assert!(result1.is_ok());
@@ -728,9 +793,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_handle_event_pending_client_continue() {
+    fn test_handle_event_pending_client_continue(socket_pair: (UnixStream, UnixStream)) {
         let mut agent_state = AgentState::new(2000);
-        let (_client, server) = create_socket_pair();
+        let (_client, server) = socket_pair;
         let producer = Arc::new(ArcSwapOption::empty());
 
         let (client_id, _) = agent_state.accept_connection(server).unwrap();
@@ -752,9 +817,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_timer_pending_client_not_timed_out() {
+    fn test_timer_pending_client_not_timed_out(socket_pair: (UnixStream, UnixStream)) {
         let mut agent_state = AgentState::new(2000);
-        let (_client, server) = create_socket_pair();
+        let (_client, server) = socket_pair;
         let producer = Arc::new(ArcSwapOption::empty());
 
         let (client_id, _) = agent_state.accept_connection(server).unwrap();
@@ -763,5 +828,27 @@ mod tests {
 
         assert!(actions.is_empty());
         assert!(agent_state.pending_clients.contains_key(&client_id));
+    }
+
+    #[rstest]
+    #[case::monotonic(protocol::TimestampType::Monotonic)]
+    #[case::boottime(protocol::TimestampType::Boottime)]
+    #[case::realtime(protocol::TimestampType::Realtime)]
+    fn test_timestamp_types(
+        socket_pair: (UnixStream, UnixStream),
+        test_consumer: Consumer,
+        mut agent_context: AgentContext,
+        #[case] timestamp_type: protocol::TimestampType,
+    ) {
+        let (client, server) = socket_pair;
+        let mut client_state = AgentClientState::new(1, server);
+
+        send_start_message_with_fds_and_timestamp(&client, &test_consumer, timestamp_type);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let result = client_state.handle_message(&mut agent_context);
+
+        assert!(matches!(result, MessageResult::Started(_)));
+        assert!(matches!(client_state.state, State::Started));
     }
 }
