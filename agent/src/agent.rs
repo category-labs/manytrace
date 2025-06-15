@@ -3,28 +3,52 @@ use protocol::Event;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use thread_local::ThreadLocal;
 
 use crate::epoll_thread::epoll_listener_thread;
 use crate::{Producer, Result};
 
-/// Producer state containing producer and client_id.
+/// Producer state containing producer and thread tracking.
 pub(crate) struct ProducerState {
     producer: Arc<Producer>,
-    client_id: u64,
     clock_id: libc::clockid_t,
+    thread_names_sent: Arc<ThreadLocal<std::cell::Cell<bool>>>,
 }
 
 impl ProducerState {
-    pub(crate) fn new(producer: Arc<Producer>, client_id: u64, clock_id: libc::clockid_t) -> Self {
+    pub(crate) fn new(producer: Arc<Producer>, clock_id: libc::clockid_t) -> Self {
         Self {
             producer,
-            client_id,
             clock_id,
+            thread_names_sent: Arc::new(ThreadLocal::new()),
         }
     }
 
     pub(crate) fn clock_id(&self) -> libc::clockid_t {
         self.clock_id
+    }
+
+    pub(crate) fn submit_with_thread_name(&self, event: &Event) -> Result<()> {
+        let thread_sent = self
+            .thread_names_sent
+            .get_or(|| std::cell::Cell::new(false));
+
+        if !thread_sent.get() {
+            if let Some(thread_name) = std::thread::current().name() {
+                let thread_event = protocol::Event::ThreadName(protocol::ThreadName {
+                    name: thread_name,
+                    tid: unsafe { libc::syscall(libc::SYS_gettid) } as i32,
+                    pid: std::process::id() as i32,
+                });
+
+                if let Err(e) = self.producer.submit(&thread_event) {
+                    tracing::debug!(error = ?e, "failed to submit thread name event");
+                }
+            }
+            thread_sent.set(true);
+        }
+
+        self.producer.submit(event)
     }
 }
 
@@ -81,14 +105,9 @@ impl Agent {
     pub fn submit(&self, event: &Event) -> Result<()> {
         let producer_state = self.producer_state.load();
         match producer_state.as_ref() {
-            Some(state) => state.producer.submit(event),
+            Some(state) => state.submit_with_thread_name(event),
             None => Err(crate::AgentError::NotEnabled),
         }
-    }
-
-    /// Get the current client_id if available.
-    pub fn client_id(&self) -> Option<u64> {
-        self.producer_state.load().as_ref().map(|s| s.client_id)
     }
 
     /// Get the current clock ID if a client is connected.

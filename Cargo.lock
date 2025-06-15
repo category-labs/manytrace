@@ -21,6 +21,7 @@ dependencies = [
  "rstest",
  "tempfile",
  "thiserror",
+ "thread_local",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1407,6 +1408,7 @@ dependencies = [
  "protocol",
  "rstest",
  "tempfile",
+ "thread_local",
  "tracing",
  "tracing-subscriber",
 ]

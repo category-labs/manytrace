@@ -1,33 +1,15 @@
 use agent::Agent;
-use protocol::{Event, Instant, Labels, ProcessName, Span, ThreadName};
+use protocol::{Event, Instant, Labels, Span};
 use std::borrow::Cow;
 use std::sync::Arc;
+use thread_local::ThreadLocal;
 use tracing::{Id, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
-use std::cell::Cell;
-use std::sync::OnceLock;
-
-thread_local! {
-    static THREAD_ID: i32 = unsafe { libc::syscall(libc::SYS_gettid) as i32 };
-    static THREAD_CLIENT_ID: Cell<Option<u64>> = const { Cell::new(None) };
-}
-
-static PROCESS_ID: OnceLock<i32> = OnceLock::new();
-static PROCESS_CLIENT_ID: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
-
 pub(crate) struct SpanData {
     pub labels: Labels<'static>,
     pub start_timestamp: u64,
-}
-
-fn get_thread_id() -> i32 {
-    THREAD_ID.with(|&tid| tid)
-}
-
-fn get_process_id() -> i32 {
-    *PROCESS_ID.get_or_init(|| std::process::id() as i32)
 }
 
 fn get_timestamp() -> u64 {
@@ -43,58 +25,28 @@ fn get_timestamp() -> u64 {
 
 pub struct ManytraceLayer {
     agent: Arc<Agent>,
+    thread_ids: Arc<ThreadLocal<std::cell::Cell<i32>>>,
+    process_id: i32,
 }
 
 impl ManytraceLayer {
     pub fn new(agent: Arc<Agent>) -> Self {
-        Self { agent }
+        Self {
+            agent,
+            thread_ids: Arc::new(ThreadLocal::new()),
+            process_id: std::process::id() as i32,
+        }
     }
 
-    fn maybe_emit_thread_process_names(&self) {
-        let current_client_id = self.agent.client_id();
-        if current_client_id.is_none() {
-            return;
-        }
+    fn get_thread_id(&self) -> i32 {
+        let thread_id_cell = self
+            .thread_ids
+            .get_or(|| std::cell::Cell::new(unsafe { libc::syscall(libc::SYS_gettid) as i32 }));
+        thread_id_cell.get()
+    }
 
-        let pid = get_process_id();
-
-        if let Ok(mut stored_client_id) = PROCESS_CLIENT_ID.lock() {
-            if *stored_client_id != current_client_id {
-                *stored_client_id = current_client_id;
-
-                let process_name = std::env::current_exe()
-                    .ok()
-                    .and_then(|path| path.file_name().map(|s| s.to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| format!("process-{}", pid));
-
-                let event = Event::ProcessName(ProcessName {
-                    name: &process_name,
-                    pid,
-                });
-
-                let _ = self.agent.submit(&event);
-            }
-        }
-
-        THREAD_CLIENT_ID.with(|stored| {
-            if stored.get() != current_client_id {
-                stored.set(current_client_id);
-
-                let tid = get_thread_id();
-                let thread_name = std::thread::current()
-                    .name()
-                    .map(|s| s.to_owned())
-                    .unwrap_or_else(|| format!("thread-{}", tid));
-
-                let event = Event::ThreadName(ThreadName {
-                    name: &thread_name,
-                    tid,
-                    pid,
-                });
-
-                let _ = self.agent.submit(&event);
-            }
-        });
+    fn get_process_id(&self) -> i32 {
+        self.process_id
     }
 }
 
@@ -119,8 +71,6 @@ where
 
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
-            self.maybe_emit_thread_process_names();
-
             if let Some(span_data) = span.extensions_mut().get_mut::<SpanData>() {
                 span_data.start_timestamp = get_timestamp();
             }
@@ -137,8 +87,8 @@ where
                     span_id,
                     start_timestamp: span_data.start_timestamp,
                     end_timestamp: get_timestamp(),
-                    tid: get_thread_id(),
-                    pid: get_process_id(),
+                    tid: self.get_thread_id(),
+                    pid: self.get_process_id(),
                     labels: Cow::Borrowed(&span_data.labels),
                 };
                 let _ = self.agent.submit(&Event::Span(span_event));
@@ -151,8 +101,6 @@ where
             return;
         }
 
-        self.maybe_emit_thread_process_names();
-
         let metadata = event.metadata();
         let labels = Labels::new();
         let mut span_data = SpanData {
@@ -163,8 +111,8 @@ where
         let instant = Instant {
             name: metadata.name(),
             timestamp: get_timestamp(),
-            tid: get_thread_id(),
-            pid: get_process_id(),
+            tid: self.get_thread_id(),
+            pid: self.get_process_id(),
             labels: Cow::Borrowed(&span_data.labels),
         };
         let _ = self.agent.submit(&Event::Instant(instant));

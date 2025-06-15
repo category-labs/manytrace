@@ -222,7 +222,24 @@ fn handle_start_message(
             )?;
 
             let producer = Arc::new(Producer::from_inner(new_producer));
-            let producer_state = Arc::new(ProducerState::new(producer, client_id, clock_id));
+
+            if let Ok(exe_path) = std::env::current_exe() {
+                let process_name = exe_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown");
+
+                let process_event = protocol::Event::ProcessName(protocol::ProcessName {
+                    name: process_name,
+                    pid: std::process::id() as i32,
+                });
+
+                if let Err(e) = producer.submit(&process_event) {
+                    debug!(error = ?e, "failed to submit process name event");
+                }
+            }
+
+            let producer_state = Arc::new(ProducerState::new(producer, clock_id));
 
             debug!(buffer_size, client_id, "producer initialized");
 
