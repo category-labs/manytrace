@@ -15,6 +15,8 @@ thread_local = "1.1"
 rstest = { workspace = true }
 tempfile = { workspace = true }
 divan = { workspace = true }
+clap = { workspace = true }
+ctrlc = "3.4"
 
 [[bench]]
 name = "on_event"

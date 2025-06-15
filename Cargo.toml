@@ -1,5 +1,5 @@
 [workspace]
-members = ["mpscbuf", "protocol", "agent", "tracing-manytrace", "chrome-trace-format"]
+members = ["mpscbuf", "protocol", "agent", "tracing-manytrace", "chrome-trace-format", "usertrace"]
 resolver = "2"
 
 [workspace.package]

@@ -334,6 +334,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "ctrlc"
+version = "3.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46f93780a459b7d656ef7f071fe699c4d3d2cb201c4b24d085b6ddc505276e73"
+dependencies = [
+ "nix",
+ "windows-sys",
+]
+
+[[package]]
 name = "dashmap"
 version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1435,6 +1445,8 @@ name = "tracing-manytrace"
 version = "0.1.0"
 dependencies = [
  "agent",
+ "clap",
+ "ctrlc",
  "divan",
  "libc",
  "protocol",
@@ -1468,6 +1480,22 @@ name = "unicode-ident"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a5f39404a5da50712a4c1eecf25e90dd62b613502b7e925fd4e4d19b5c96512"
+
+[[package]]
+name = "usertrace"
+version = "0.1.0"
+dependencies = [
+ "agent",
+ "chrome-trace-format",
+ "clap",
+ "eyre",
+ "protocol",
+ "rkyv",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "utf8parse"
