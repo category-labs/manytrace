@@ -105,6 +105,7 @@ mod tests {
     use super::*;
     use mpscbuf::WakeupStrategy;
     use protocol::{Counter, Labels};
+    use std::borrow::Cow;
 
     #[test]
     fn test_producer_consumer_single_thread() {
@@ -127,7 +128,7 @@ mod tests {
             timestamp: 1000,
             tid: 123,
             pid: 456,
-            labels: Labels::new(),
+            labels: Cow::Owned(Labels::new()),
         });
 
         producer.submit(&counter).unwrap();

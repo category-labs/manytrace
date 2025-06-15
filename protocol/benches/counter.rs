@@ -2,6 +2,7 @@ use divan::Bencher;
 use protocol::{compute_length, serialize_to_buf, Counter, Labels};
 use rkyv::api::high::to_bytes_in;
 use rkyv::util::AlignedVec;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hint::black_box;
 
@@ -19,11 +20,11 @@ fn create_counter_with_labels(num_labels: usize) -> Counter<'static> {
             0 => {
                 strings.insert(
                     &*Box::leak(format!("str_label_{}", i).into_boxed_str()),
-                    if i == 4 {
+                    Cow::Borrowed(if i == 4 {
                         "value542134234134324523423f2kr2423k4l234l32k423kl43kl343k2432k32"
                     } else {
                         &*Box::leak(format!("value_{}", i).into_boxed_str())
-                    },
+                    }),
                 );
             }
             1 => {
@@ -61,7 +62,7 @@ fn create_counter_with_labels(num_labels: usize) -> Counter<'static> {
         timestamp: 1234567890,
         tid: 123,
         pid: 456,
-        labels,
+        labels: Cow::Owned(labels),
     }
 }
 

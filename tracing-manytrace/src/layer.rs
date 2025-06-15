@@ -1,8 +1,8 @@
 use agent::Agent;
 use protocol::{Event, Instant, Labels, ProcessName, Span, ThreadName};
-use std::collections::HashMap;
+use std::borrow::Cow;
 use std::sync::Arc;
-use tracing::{Id, Metadata, Subscriber};
+use tracing::{Id, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
@@ -19,7 +19,6 @@ static PROCESS_CLIENT_ID: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(
 
 pub(crate) struct SpanData {
     pub labels: Labels<'static>,
-    pub strings_storage: HashMap<&'static str, String>,
     pub start_timestamp: u64,
 }
 
@@ -97,15 +96,6 @@ impl ManytraceLayer {
             }
         });
     }
-
-    fn create_labels(&self, _metadata: &'static Metadata<'static>) -> Labels<'static> {
-        Labels {
-            strings: HashMap::new(),
-            ints: HashMap::new(),
-            bools: HashMap::new(),
-            floats: HashMap::new(),
-        }
-    }
 }
 
 impl<S> Layer<S> for ManytraceLayer
@@ -116,12 +106,9 @@ where
         if !self.agent.enabled() {
             return;
         }
-        let metadata = attrs.metadata();
-        let labels = self.create_labels(metadata);
-        let strings_storage = HashMap::new();
+        let labels = Labels::new();
         let mut span_data = SpanData {
             labels,
-            strings_storage,
             start_timestamp: 0,
         };
         attrs.record(&mut span_data);
@@ -152,7 +139,7 @@ where
                     end_timestamp: get_timestamp(),
                     tid: get_thread_id(),
                     pid: get_process_id(),
-                    labels: span_data.labels.clone(),
+                    labels: Cow::Borrowed(&span_data.labels),
                 };
                 let _ = self.agent.submit(&Event::Span(span_event));
             }
@@ -167,10 +154,9 @@ where
         self.maybe_emit_thread_process_names();
 
         let metadata = event.metadata();
-        let labels = self.create_labels(metadata);
+        let labels = Labels::new();
         let mut span_data = SpanData {
             labels,
-            strings_storage: HashMap::new(),
             start_timestamp: 0,
         };
         event.record(&mut span_data);
@@ -179,7 +165,7 @@ where
             timestamp: get_timestamp(),
             tid: get_thread_id(),
             pid: get_process_id(),
-            labels: span_data.labels.clone(),
+            labels: Cow::Borrowed(&span_data.labels),
         };
         let _ = self.agent.submit(&Event::Instant(instant));
     }

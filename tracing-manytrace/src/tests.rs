@@ -75,7 +75,7 @@ fn test_basic_span(mut setup: TestSetup) {
         .expect("failed to send keepalive");
 
     let mut span_count = 0;
-    let mut other_count = 0;
+    let mut _other_count = 0;
     for record in setup.consumer.iter() {
         match record.as_event() {
             Ok(protocol::ArchivedEvent::Span(span)) => {
@@ -84,7 +84,7 @@ fn test_basic_span(mut setup: TestSetup) {
                 assert!(span.start_timestamp.to_native() > 0);
                 assert!(span.end_timestamp.to_native() > span.start_timestamp.to_native());
             }
-            Ok(_) => other_count += 1,
+            Ok(_) => _other_count += 1,
             Err(_) => {}
         }
     }

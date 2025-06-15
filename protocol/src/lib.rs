@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Display;
@@ -6,13 +7,13 @@ use rkyv::api::high::{to_bytes_in, HighSerializer};
 use rkyv::rancor::{fail, Fallible};
 use rkyv::ser::allocator::ArenaHandle;
 use rkyv::ser::{Positional, Writer};
-use rkyv::with::{Identity, InlineAsBox, MapKV};
+use rkyv::with::{AsOwned, Identity, InlineAsBox, MapKV};
 use rkyv::{Archive, Deserialize, Serialize};
 
 #[derive(Archive, Deserialize, Serialize, Clone)]
 pub struct Labels<'a> {
-    #[rkyv(with = MapKV<InlineAsBox, InlineAsBox>)]
-    pub strings: HashMap<&'a str, &'a str>,
+    #[rkyv(with = MapKV<InlineAsBox, AsOwned>)]
+    pub strings: HashMap<&'a str, Cow<'a, str>>,
     #[rkyv(with = MapKV<InlineAsBox, Identity>)]
     pub ints: HashMap<&'a str, i64>,
     #[rkyv(with = MapKV<InlineAsBox, Identity>)]
@@ -46,7 +47,8 @@ pub struct Counter<'a> {
     pub timestamp: u64,
     pub tid: i32,
     pub pid: i32,
-    pub labels: Labels<'a>,
+    #[rkyv(with = AsOwned)]
+    pub labels: Cow<'a, Labels<'a>>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -58,7 +60,8 @@ pub struct Span<'a> {
     pub end_timestamp: u64,
     pub tid: i32,
     pub pid: i32,
-    pub labels: Labels<'a>,
+    #[rkyv(with = AsOwned)]
+    pub labels: Cow<'a, Labels<'a>>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -68,7 +71,8 @@ pub struct Instant<'a> {
     pub timestamp: u64,
     pub tid: i32,
     pub pid: i32,
-    pub labels: Labels<'a>,
+    #[rkyv(with = AsOwned)]
+    pub labels: Cow<'a, Labels<'a>>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -262,7 +266,7 @@ mod tests {
         Counter {
             name: "test_counter",
             value: 42.0,
-            labels: Labels::default(),
+            labels: Cow::Owned(Labels::default()),
             pid: 123,
             tid: 456,
             timestamp: 1000,
@@ -278,7 +282,7 @@ mod tests {
             end_timestamp: 2000,
             tid: 1,
             pid: 2,
-            labels: Labels::default(),
+            labels: Cow::Owned(Labels::default()),
         }
     }
 
@@ -289,7 +293,7 @@ mod tests {
             timestamp: 2000,
             tid: 3,
             pid: 4,
-            labels: Labels::default(),
+            labels: Cow::Owned(Labels::default()),
         }
     }
 
@@ -387,9 +391,9 @@ mod tests {
 
     #[rstest]
     fn test_event_serialization(
-        sample_counter: Counter,
-        sample_span: Span,
-        sample_instant: Instant,
+        sample_counter: Counter<'static>,
+        sample_span: Span<'static>,
+        sample_instant: Instant<'static>,
     ) {
         let events = [
             Event::Counter(sample_counter),

@@ -125,6 +125,7 @@ mod tests {
     use crate::{AgentClient, Consumer};
     use protocol::{Counter, Event, Labels, LogLevel};
     use rstest::*;
+    use std::borrow::Cow;
     use std::sync::Once;
     use std::thread;
     use std::time::Duration;
@@ -248,7 +249,7 @@ mod tests {
             timestamp: 1234567890,
             tid: 1,
             pid: 2,
-            labels: Labels::new(),
+            labels: Cow::Owned(Labels::new()),
         });
 
         agent.submit(&event).unwrap();
@@ -273,7 +274,7 @@ mod tests {
             timestamp: 1234567890,
             tid: 1,
             pid: 2,
-            labels: Labels::new(),
+            labels: Cow::Owned(Labels::new()),
         });
 
         agent.submit(&event).unwrap();

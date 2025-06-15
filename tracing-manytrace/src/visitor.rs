@@ -1,4 +1,5 @@
 use crate::layer::SpanData;
+use std::borrow::Cow;
 use std::fmt;
 use tracing::field::{Field, Visit};
 
@@ -24,17 +25,15 @@ impl Visit for SpanData {
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        self.strings_storage.insert(field.name(), value.to_string());
-        let stored_value = self.strings_storage.get(field.name()).unwrap();
-        let value_ref = unsafe { std::mem::transmute::<&str, &'static str>(stored_value.as_str()) };
-        self.labels.strings.insert(field.name(), value_ref);
+        self.labels
+            .strings
+            .insert(field.name(), Cow::Owned(value.to_string()));
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
         let formatted = format!("{:?}", value);
-        self.strings_storage.insert(field.name(), formatted);
-        let stored_value = self.strings_storage.get(field.name()).unwrap();
-        let value_ref = unsafe { std::mem::transmute::<&str, &'static str>(stored_value.as_str()) };
-        self.labels.strings.insert(field.name(), value_ref);
+        self.labels
+            .strings
+            .insert(field.name(), Cow::Owned(formatted));
     }
 }
