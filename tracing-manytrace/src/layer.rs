@@ -168,25 +168,6 @@ where
         }
     }
 
-    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
-        if let Some(span) = ctx.span(&id) {
-            if let Some(stored_labels) = span.extensions().get::<StoredLabels>() {
-                let metadata = span.metadata();
-                let span_id = id.into_u64();
-                let span_event = Span {
-                    name: metadata.name(),
-                    span_id,
-                    event: SpanEvent::End,
-                    timestamp: get_timestamp(&self.agent),
-                    tid: get_thread_id(),
-                    pid: get_process_id(),
-                    labels: stored_labels.labels.clone(),
-                };
-                let _ = self.agent.submit(&Event::Span(span_event));
-            }
-        }
-    }
-
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
         if !self.agent.enabled() {
             return;

@@ -54,7 +54,6 @@ pub struct Counter<'a> {
 pub enum SpanEvent {
     Start,
     Stop,
-    End,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
