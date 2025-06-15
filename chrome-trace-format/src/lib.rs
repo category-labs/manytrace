@@ -491,7 +491,7 @@ pub struct CompleteEvent {
 /// - Global scope: Spans entire timeline top to bottom
 ///
 /// Thread-scoped events support stack traces; process/global scopes do not.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 pub struct InstantEvent {
     /// Display name of the event in the trace viewer.
     ///

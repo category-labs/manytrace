@@ -1,6 +1,7 @@
 use agent::{AgentClient, Consumer};
 use chrome_trace_format::{
-    ChromeTrace, CompleteEvent, CounterEvent, MetadataEvent, MetadataName, Phase, TraceEvent,
+    ChromeTrace, CompleteEvent, CounterEvent, InstantEvent, InstantScope, MetadataEvent,
+    MetadataName, Phase, TraceEvent,
 };
 use clap::Parser;
 use eyre::Result;
@@ -157,15 +158,15 @@ impl TraceConverter {
             Some(serde_json::Value::Object(args))
         };
         let ts = instant.timestamp.to_native();
-        self.events.push(TraceEvent::Complete(
-            CompleteEvent::builder()
+        self.events.push(TraceEvent::Instant(
+            InstantEvent::builder()
                 .name(instant.name.to_string())
                 .cat("instant".to_string())
-                .ph(Phase::Complete)
+                .ph(Phase::Instant)
                 .ts(ts)
-                .dur(1)
                 .pid(instant.pid.to_native() as u32)
                 .tid(instant.tid.to_native() as u32)
+                .s(InstantScope::Thread)
                 .maybe_args(args_value)
                 .build(),
         ));

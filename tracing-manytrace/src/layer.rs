@@ -1,5 +1,5 @@
 use agent::Agent;
-use protocol::{Event, Labels, Span};
+use protocol::{Event, Instant, Labels, Span};
 use std::borrow::Cow;
 use std::sync::Arc;
 use thread_local::ThreadLocal;
@@ -109,15 +109,13 @@ where
         };
         event.record(&mut span_data);
         let timestamp = get_timestamp(self.agent.clock_id());
-        let span_event = Span {
+        let instant_event = Instant {
             name: metadata.name(),
-            span_id: timestamp,
-            start_timestamp: timestamp,
-            end_timestamp: timestamp + 1,
+            timestamp,
             tid: self.get_thread_id(),
             pid: self.get_process_id(),
             labels: Cow::Borrowed(&span_data.labels),
         };
-        let _ = self.agent.submit(&Event::Span(span_event));
+        let _ = self.agent.submit(&Event::Instant(instant_event));
     }
 }
