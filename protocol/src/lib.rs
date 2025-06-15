@@ -49,20 +49,13 @@ pub struct Counter<'a> {
     pub labels: Labels<'a>,
 }
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[rkyv(compare(PartialEq), derive(Debug))]
-pub enum SpanEvent {
-    Start,
-    Stop,
-}
-
 #[derive(Archive, Serialize, Deserialize)]
 pub struct Span<'a> {
     #[rkyv(with = InlineAsBox)]
     pub name: &'a str,
     pub span_id: u64,
-    pub event: SpanEvent,
-    pub timestamp: u64,
+    pub start_timestamp: u64,
+    pub end_timestamp: u64,
     pub tid: i32,
     pub pid: i32,
     pub labels: Labels<'a>,
@@ -281,8 +274,8 @@ mod tests {
         Span {
             name: "test_span",
             span_id: 42,
-            event: SpanEvent::Start,
-            timestamp: 1000,
+            start_timestamp: 1000,
+            end_timestamp: 2000,
             tid: 1,
             pid: 2,
             labels: Labels::default(),
@@ -363,8 +356,8 @@ mod tests {
 
         assert_eq!(archived.name.as_bytes(), sample_span.name.as_bytes());
         assert_eq!(archived.span_id, sample_span.span_id);
-        assert_eq!(archived.event, sample_span.event);
-        assert_eq!(archived.timestamp, sample_span.timestamp);
+        assert_eq!(archived.start_timestamp, sample_span.start_timestamp);
+        assert_eq!(archived.end_timestamp, sample_span.end_timestamp);
     }
 
     #[rstest]
@@ -418,7 +411,8 @@ mod tests {
                 (Event::Span(span), ArchivedEvent::Span(arch_span)) => {
                     assert_eq!(span.name.as_bytes(), arch_span.name.as_bytes());
                     assert_eq!(span.span_id, arch_span.span_id.to_native());
-                    assert_eq!(span.event, arch_span.event);
+                    assert_eq!(span.start_timestamp, arch_span.start_timestamp.to_native());
+                    assert_eq!(span.end_timestamp, arch_span.end_timestamp.to_native());
                 }
                 (Event::Instant(instant), ArchivedEvent::Instant(arch_instant)) => {
                     assert_eq!(instant.name.as_bytes(), arch_instant.name.as_bytes());

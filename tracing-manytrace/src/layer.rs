@@ -1,5 +1,5 @@
 use agent::Agent;
-use protocol::{Event, Instant, Labels, ProcessName, Span, SpanEvent, ThreadName};
+use protocol::{Event, Instant, Labels, ProcessName, Span, ThreadName};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{Id, Metadata, Subscriber};
@@ -17,9 +17,10 @@ thread_local! {
 static PROCESS_ID: OnceLock<i32> = OnceLock::new();
 static PROCESS_CLIENT_ID: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
 
-pub(crate) struct StoredLabels {
+pub(crate) struct SpanData {
     pub labels: Labels<'static>,
     pub strings_storage: HashMap<&'static str, String>,
+    pub start_timestamp: u64,
 }
 
 fn get_thread_id() -> i32 {
@@ -30,13 +31,13 @@ fn get_process_id() -> i32 {
     *PROCESS_ID.get_or_init(|| std::process::id() as i32)
 }
 
-fn get_timestamp(agent: &Agent) -> u64 {
+fn get_timestamp() -> u64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
     unsafe {
-        libc::clock_gettime(agent.clock_id(), &mut ts);
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
     }
     (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
 }
@@ -118,50 +119,40 @@ where
         let metadata = attrs.metadata();
         let labels = self.create_labels(metadata);
         let strings_storage = HashMap::new();
-        let mut stored_labels = StoredLabels {
+        let mut span_data = SpanData {
             labels,
             strings_storage,
+            start_timestamp: 0,
         };
-        attrs.record(&mut stored_labels);
+        attrs.record(&mut span_data);
         if let Some(span) = ctx.span(id) {
-            span.extensions_mut().insert(stored_labels);
+            span.extensions_mut().insert(span_data);
         }
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
-            if let Some(stored_labels) = span.extensions().get::<StoredLabels>() {
-                self.maybe_emit_thread_process_names();
+            self.maybe_emit_thread_process_names();
 
-                let metadata = span.metadata();
-                let span_id = id.into_u64();
-                let span_event = Span {
-                    name: metadata.name(),
-                    span_id,
-                    event: SpanEvent::Start,
-                    timestamp: get_timestamp(&self.agent),
-                    tid: get_thread_id(),
-                    pid: get_process_id(),
-                    labels: stored_labels.labels.clone(),
-                };
-                let _ = self.agent.submit(&Event::Span(span_event));
+            if let Some(span_data) = span.extensions_mut().get_mut::<SpanData>() {
+                span_data.start_timestamp = get_timestamp();
             }
         }
     }
 
     fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
-            if let Some(stored_labels) = span.extensions().get::<StoredLabels>() {
+            if let Some(span_data) = span.extensions().get::<SpanData>() {
                 let metadata = span.metadata();
                 let span_id = id.into_u64();
                 let span_event = Span {
                     name: metadata.name(),
                     span_id,
-                    event: SpanEvent::Stop,
-                    timestamp: get_timestamp(&self.agent),
+                    start_timestamp: span_data.start_timestamp,
+                    end_timestamp: get_timestamp(),
                     tid: get_thread_id(),
                     pid: get_process_id(),
-                    labels: stored_labels.labels.clone(),
+                    labels: span_data.labels.clone(),
                 };
                 let _ = self.agent.submit(&Event::Span(span_event));
             }
@@ -177,17 +168,18 @@ where
 
         let metadata = event.metadata();
         let labels = self.create_labels(metadata);
-        let mut stored_labels = StoredLabels {
+        let mut span_data = SpanData {
             labels,
             strings_storage: HashMap::new(),
+            start_timestamp: 0,
         };
-        event.record(&mut stored_labels);
+        event.record(&mut span_data);
         let instant = Instant {
             name: metadata.name(),
-            timestamp: get_timestamp(&self.agent),
+            timestamp: get_timestamp(),
             tid: get_thread_id(),
             pid: get_process_id(),
-            labels: stored_labels.labels.clone(),
+            labels: span_data.labels.clone(),
         };
         let _ = self.agent.submit(&Event::Instant(instant));
     }

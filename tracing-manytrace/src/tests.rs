@@ -66,18 +66,30 @@ fn test_basic_span(mut setup: TestSetup) {
     tracing::subscriber::with_default(subscriber, || {
         let span = info_span!("test_span");
         let _guard = span.enter();
+        // Span should be emitted when dropped
     });
+
     setup
         .client
         .send_continue()
         .expect("failed to send keepalive");
-    let mut count = 0;
+
+    let mut span_count = 0;
+    let mut other_count = 0;
     for record in setup.consumer.iter() {
-        if record.as_event().is_ok() {
-            count += 1;
+        match record.as_event() {
+            Ok(protocol::ArchivedEvent::Span(span)) => {
+                span_count += 1;
+                assert_eq!(span.name.as_bytes(), b"test_span");
+                assert!(span.start_timestamp.to_native() > 0);
+                assert!(span.end_timestamp.to_native() > span.start_timestamp.to_native());
+            }
+            Ok(_) => other_count += 1,
+            Err(_) => {}
         }
     }
-    assert!(count > 0);
+
+    assert!(span_count > 0, "Expected at least one span event");
     setup.client.stop().expect("failed to stop client");
 }
 
@@ -99,6 +111,8 @@ fn test_span_with_fields(mut setup: TestSetup) {
                 if span.name.as_bytes() == b"my_span" {
                     assert!(span.labels.ints.get("answer").is_some());
                     assert!(span.labels.strings.get("name").is_some());
+                    assert!(span.start_timestamp.to_native() > 0);
+                    assert!(span.end_timestamp.to_native() > span.start_timestamp.to_native());
                     found_span_with_fields = true;
                 }
             }

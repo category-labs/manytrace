@@ -1,8 +1,8 @@
-use crate::layer::StoredLabels;
+use crate::layer::SpanData;
 use std::fmt;
 use tracing::field::{Field, Visit};
 
-impl Visit for StoredLabels {
+impl Visit for SpanData {
     fn record_i64(&mut self, field: &Field, value: i64) {
         self.labels.ints.insert(field.name(), value);
     }
