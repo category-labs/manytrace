@@ -20,13 +20,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut events = vec![];
 
     // Metadata events
-    events.push(TraceEvent::Metadata(MetadataEvent {
-        ph: Phase::Metadata,
-        pid: 1234,
-        tid: Some(5678),
-        name: MetadataName::ThreadName,
-        args: serde_json::json!({"name": "MainThread"}),
-    }));
+    events.push(TraceEvent::Metadata(
+        MetadataEvent::builder()
+            .ph(Phase::Metadata)
+            .pid(1234)
+            .tid(5678)
+            .name(MetadataName::ThreadName)
+            .args(serde_json::json!({"name": "MainThread"}))
+            .build(),
+    ));
 
     events.push(TraceEvent::Metadata(MetadataEvent {
         ph: Phase::Metadata,

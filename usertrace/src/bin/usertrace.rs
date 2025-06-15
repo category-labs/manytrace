@@ -81,18 +81,17 @@ impl TraceConverter {
         for (key, value) in counter.labels.bools.iter() {
             args.insert(key.to_string(), serde_json::Value::from(*value));
         }
-        self.events.push(TraceEvent::Counter(CounterEvent {
-            name: counter.name.to_string(),
-            cat: Some("counter".to_string()),
-            ph: Phase::Counter,
-            ts: counter.timestamp.to_native(),
-            pid: counter.pid.to_native() as u32,
-            tid: counter.tid.to_native() as u32,
-            args: serde_json::Value::Object(args),
-            id: None,
-            tts: None,
-            cname: None,
-        }));
+        self.events.push(TraceEvent::Counter(
+            CounterEvent::builder()
+                .name(counter.name.to_string())
+                .cat("counter".to_string())
+                .ph(Phase::Counter)
+                .ts(counter.timestamp.to_native())
+                .pid(counter.pid.to_native() as u32)
+                .tid(counter.tid.to_native() as u32)
+                .args(serde_json::Value::Object(args))
+                .build(),
+        ));
     }
 
     fn add_span(&mut self, span: &protocol::ArchivedSpan) {
@@ -120,27 +119,18 @@ impl TraceConverter {
         let start_ts = span.start_timestamp.to_native();
         let end_ts = span.end_timestamp.to_native();
         if end_ts > start_ts {
-            self.events.push(TraceEvent::Complete(CompleteEvent {
-                name: span.name.to_string(),
-                cat: Some("span".to_string()),
-                ph: Phase::Complete,
-                ts: start_ts,
-                dur: end_ts - start_ts,
-                pid: span.pid.to_native() as u32,
-                tid: span.tid.to_native() as u32,
-                args: args_value,
-                tdur: None,
-                tts: None,
-                cname: None,
-                bind_id: None,
-                flow_in: None,
-                flow_out: None,
-                id: None,
-                id2: None,
-                scope: None,
-                sf: None,
-                esf: None,
-            }));
+            self.events.push(TraceEvent::Complete(
+                CompleteEvent::builder()
+                    .name(span.name.to_string())
+                    .cat("span".to_string())
+                    .ph(Phase::Complete)
+                    .ts(start_ts)
+                    .dur(end_ts - start_ts)
+                    .pid(span.pid.to_native() as u32)
+                    .tid(span.tid.to_native() as u32)
+                    .maybe_args(args_value)
+                    .build(),
+            ));
         }
     }
 
@@ -167,64 +157,52 @@ impl TraceConverter {
             Some(serde_json::Value::Object(args))
         };
         let ts = instant.timestamp.to_native();
-        self.events.push(TraceEvent::Complete(CompleteEvent {
-            name: instant.name.to_string(),
-            cat: Some("instant".to_string()),
-            ph: Phase::Complete,
-            ts,
-            dur: 1,
-            pid: instant.pid.to_native() as u32,
-            tid: instant.tid.to_native() as u32,
-            args: args_value,
-            tdur: None,
-            tts: None,
-            cname: None,
-            bind_id: None,
-            flow_in: None,
-            flow_out: None,
-            id: None,
-            id2: None,
-            scope: None,
-            sf: None,
-            esf: None,
-        }));
+        self.events.push(TraceEvent::Complete(
+            CompleteEvent::builder()
+                .name(instant.name.to_string())
+                .cat("instant".to_string())
+                .ph(Phase::Complete)
+                .ts(ts)
+                .dur(1)
+                .pid(instant.pid.to_native() as u32)
+                .tid(instant.tid.to_native() as u32)
+                .maybe_args(args_value)
+                .build(),
+        ));
     }
 
     fn add_thread_name(&mut self, thread_name: &protocol::ArchivedThreadName) {
-        self.events.push(TraceEvent::Metadata(MetadataEvent {
-            ph: Phase::Metadata,
-            pid: thread_name.pid.to_native() as u32,
-            tid: Some(thread_name.tid.to_native() as u32),
-            name: MetadataName::ThreadName,
-            args: serde_json::json!({"name": thread_name.name.to_string()}),
-        }));
+        self.events.push(TraceEvent::Metadata(
+            MetadataEvent::builder()
+                .ph(Phase::Metadata)
+                .pid(thread_name.pid.to_native() as u32)
+                .tid(thread_name.tid.to_native() as u32)
+                .name(MetadataName::ThreadName)
+                .args(serde_json::json!({"name": thread_name.name.to_string()}))
+                .build(),
+        ));
     }
 
     fn add_process_name(&mut self, process_name: &protocol::ArchivedProcessName) {
-        self.events.push(TraceEvent::Metadata(MetadataEvent {
-            ph: Phase::Metadata,
-            pid: process_name.pid.to_native() as u32,
-            tid: None,
-            name: MetadataName::ProcessName,
-            args: serde_json::json!({"name": process_name.name.to_string()}),
-        }));
+        self.events.push(TraceEvent::Metadata(
+            MetadataEvent::builder()
+                .ph(Phase::Metadata)
+                .pid(process_name.pid.to_native() as u32)
+                .name(MetadataName::ProcessName)
+                .args(serde_json::json!({"name": process_name.name.to_string()}))
+                .build(),
+        ));
     }
 
     fn into_chrome_trace(self) -> ChromeTrace {
-        ChromeTrace {
-            trace_events: Some(self.events),
-            display_time_unit: Some("ns".to_string()),
-            system_trace_events: None,
-            other_data: None,
-            power_trace_asynchronous_data: None,
-            stack_frames: None,
-            samples: None,
-            control_flow_profile: None,
-            metadata: Some(serde_json::json!({
+        ChromeTrace::builder()
+            .trace_events(self.events)
+            .display_time_unit("ns".to_string())
+            .metadata(serde_json::json!({
                 "generator": "usertrace",
                 "version": "0.1.0"
-            })),
-        }
+            }))
+            .build()
     }
 }
 

@@ -35,6 +35,7 @@
 //! All timestamps are in microseconds by default. The `display_time_unit` field
 //! in the JSON object format can specify "ms" or "ns" for display purposes.
 
+use bon::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -48,7 +49,7 @@ use serde_json::Value;
 ///
 /// The JSON Object Format provides more flexibility with additional properties like
 /// display time units, system trace data, stack frames, and custom metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 pub struct ChromeTrace {
     /// The array of trace events. This is the primary data in a trace.
     ///
@@ -402,7 +403,7 @@ pub struct DurationEvent {
 ///
 /// Complete events are more efficient than separate B/E events when the duration
 /// is known. They reduce trace size by about half compared to duration events.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 pub struct CompleteEvent {
     /// Display name of the event in the trace viewer.
     pub name: String,
@@ -575,7 +576,7 @@ pub struct InstantEvent {
 /// - Each key in args represents a different data series
 ///
 /// Example args: `{"cats": 10, "dogs": 5}` creates two series
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 pub struct CounterEvent {
     /// Display name of the counter in the trace viewer.
     pub name: String,
@@ -937,7 +938,7 @@ pub enum MetadataName {
 ///
 /// Sort indices control display order (lower = higher in the UI).
 /// Items with same sort index are sorted by name, then by ID.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 pub struct MetadataEvent {
     /// Event phase - must be Metadata (M).
     pub ph: Phase,
