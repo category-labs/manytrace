@@ -1,2 +1,4 @@
 /target
 perf.data*
+*.out
+*.json
