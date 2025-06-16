@@ -195,6 +195,7 @@ dependencies = [
  "libbpf-rs",
  "libc",
  "plain",
+ "protocol",
  "thiserror",
  "vmlinux",
 ]

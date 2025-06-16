@@ -15,9 +15,11 @@ libbpf-rs = { workspace = true }
 libc = { workspace = true }
 plain = { workspace = true }
 thiserror = { workspace = true }
+protocol = { path = "../protocol" }
 
 [dev-dependencies]
 ctrlc = { workspace = true }
+protocol = { path = "../protocol" }
 
 [[example]]
 name = "threadtrack"
