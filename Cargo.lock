@@ -193,6 +193,7 @@ dependencies = [
  "eyre",
  "libbpf-cargo",
  "libbpf-rs",
+ "libbpf-sys",
  "libc",
  "plain",
  "protocol",

@@ -20,3 +20,8 @@ pub trait Consumer {
 
 mod threadtrack;
 pub use threadtrack::{ThreadTracker, ThreadTrackerBuilder};
+
+mod cpuutil;
+pub use cpuutil::{CpuUtil, CpuUtilBuilder};
+
+mod perf_event;

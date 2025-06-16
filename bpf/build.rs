@@ -4,21 +4,16 @@ use std::path::PathBuf;
 
 use libbpf_cargo::SkeletonBuilder;
 
-const SRC: &str = "src/bpf/threadtrack.bpf.c";
-
-fn main() {
-    let out = PathBuf::from(
-        env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set in build script"),
-    )
-    .join("src")
-    .join("bpf")
-    .join("threadtrack.skel.rs");
+fn build_bpf(name: &str) {
+    let src = format!("src/bpf/{}.bpf.c", name);
+    let out_dir = env::var_os("OUT_DIR").expect("OUT_DIR must be set in build script");
+    let out = PathBuf::from(out_dir).join(format!("{}.skel.rs", name));
 
     let arch = env::var("CARGO_CFG_TARGET_ARCH")
         .expect("CARGO_CFG_TARGET_ARCH must be set in build script");
 
     SkeletonBuilder::new()
-        .source(SRC)
+        .source(&src)
         .clang_args([
             OsStr::new("-I"),
             vmlinux::include_path_root().join(arch).as_os_str(),
@@ -26,5 +21,10 @@ fn main() {
         .build_and_generate(&out)
         .unwrap();
 
-    println!("cargo:rerun-if-changed={SRC}");
+    println!("cargo:rerun-if-changed={}", src);
+}
+
+fn main() {
+    build_bpf("threadtrack");
+    build_bpf("cpuutil");
 }

@@ -12,6 +12,7 @@ vmlinux = { workspace = true }
 [dependencies]
 eyre = { workspace = true }
 libbpf-rs = { workspace = true }
+libbpf-sys = { workspace = true }
 libc = { workspace = true }
 plain = { workspace = true }
 thiserror = { workspace = true }
@@ -24,3 +25,7 @@ protocol = { path = "../protocol" }
 [[example]]
 name = "threadtrack"
 path = "examples/threadtrack.rs"
+
+[[example]]
+name = "cpuutil"
+path = "examples/cpuutil.rs"

@@ -1,5 +1,6 @@
-#[path = "bpf/threadtrack.skel.rs"]
-mod threadtrack_skel;
+mod threadtrack_skel {
+    include!(concat!(env!("OUT_DIR"), "/threadtrack.skel.rs"));
+}
 
 use threadtrack_skel::*;
 
