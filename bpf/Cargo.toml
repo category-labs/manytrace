@@ -1,0 +1,24 @@
+[package]
+name = "bpf"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[build-dependencies]
+libbpf-cargo = { workspace = true }
+vmlinux = { workspace = true }
+
+[dependencies]
+eyre = { workspace = true }
+libbpf-rs = { workspace = true }
+libc = { workspace = true }
+plain = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+ctrlc = { workspace = true }
+
+[[example]]
+name = "threadtrack"
+path = "examples/threadtrack.rs"

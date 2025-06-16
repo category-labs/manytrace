@@ -1,5 +1,5 @@
 [workspace]
-members = ["mpscbuf", "protocol", "agent", "tracing-manytrace", "chrome-trace-format", "usertrace"]
+members = ["mpscbuf", "protocol", "agent", "tracing-manytrace", "chrome-trace-format", "usertrace", "bpf"]
 resolver = "2"
 
 [workspace.package]
@@ -14,19 +14,24 @@ bitcode = "0.6.6"
 bon = "3.6"
 clap = { version = "4.5", features = ["derive"] }
 crossbeam = "0.8"
+ctrlc = "3.4"
 divan = "0.1.21"
 eyre = "0.6"
 governor = "0.7"
 hdrhistogram = "7.5"
+libbpf-cargo = "0.25"
+libbpf-rs = "0.25"
 libc = "0.2"
 nix = { version = "0.30", features = ["mman", "fs", "event", "socket", "uio"] }
 parking_lot = "0.12"
+plain = "0.2"
 rkyv = { version = "0.8.10", features = ["alloc", "bytecheck"] }
 rstest = "0.23"
 tempfile = "3.0"
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+vmlinux = { git = "https://github.com/libbpf/vmlinux.h.git", rev = "83a228cf37fc65f2d14e4896a04922b5ee531a94" }
 
 [profile.bench]
 opt-level = 3
