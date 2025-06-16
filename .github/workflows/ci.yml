@@ -2,86 +2,79 @@ name: CI
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [ master ]
   pull_request:
-    branches: [ master, main ]
+    branches: [ master ]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test
+  ci:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: check
+            command: cargo check --all --verbose
+            components: ""
+          - name: build
+            command: cargo build --all --verbose
+            components: ""
+          - name: clippy
+            command: cargo clippy --all-targets --workspace -- -D warnings
+            components: clippy
+          - name: test
+            command: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
+            components: llvm-tools-preview
+            install_extras: true
+          - name: fmt
+            command: cargo fmt --all -- --check
+            components: rustfmt
+            skip_deps: true
+    
+    name: ${{ matrix.name }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-
-      - name: Install nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: Install llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run tests with coverage
-        run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
-
-      - name: Run loom tests
-        run: cargo nextest run --release -F loom loom::tests
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run clippy
-        run: cargo clippy --all-targets --workspace -- -D warnings
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-  check:
-    name: Check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check compilation
-        run: cargo check --all-targets --workspace
+    - uses: actions/checkout@v4
+    
+    - name: Install system dependencies
+      if: matrix.skip_deps != true
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          clang \
+          llvm \
+          libelf-dev \
+          libbpf-dev \
+          linux-headers-$(uname -r) \
+          pkg-config
+    
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: ${{ matrix.components }}
+    
+    - name: Install nextest
+      if: matrix.install_extras
+      uses: taiki-e/install-action@nextest
+    
+    - name: Install llvm-cov
+      if: matrix.install_extras
+      uses: taiki-e/install-action@cargo-llvm-cov
+    
+    - name: Cache cargo
+      if: matrix.skip_deps != true
+      uses: Swatinem/rust-cache@v2
+    
+    - name: Run ${{ matrix.name }}
+      run: ${{ matrix.command }}
+    
+    - name: Run loom tests
+      if: matrix.name == 'test'
+      run: cargo nextest run --release -F loom loom::tests
+    
+    - name: Build release
+      if: matrix.name == 'build'
+      run: cargo build --all --release --verbose
