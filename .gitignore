@@ -3,3 +3,4 @@ perf.data*
 *.out
 *.json
 bpf/src/bpf/*.skel.rs
+*.pftrace
