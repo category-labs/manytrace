@@ -86,8 +86,7 @@ impl Object {
     }
 }
 
-pub struct ThreadTracker<'this, F>
-{
+pub struct ThreadTracker<'this, F> {
     _skel: ThreadtrackSkel<'this>,
     ringbuf: libbpf_rs::RingBuffer<'this>,
     callback: Rc<RefCell<F>>,

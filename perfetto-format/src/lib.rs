@@ -307,7 +307,6 @@ pub fn create_callstack_interned_data(
         end: Some(0x7fffffffffffffff),
         load_bias: Some(0),
         path_string_ids: vec![],
-        ..Default::default()
     });
 
     interned_data.build_ids.push(InternedString {

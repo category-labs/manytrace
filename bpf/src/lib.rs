@@ -64,29 +64,16 @@ impl BpfObject {
         callback: F,
     ) -> Result<BpfConsumer<'this, F>, BpfError>
     where
-        F: for<'a> FnMut(Event<'a>) + 'this,
+        F: for<'a> FnMut(Event<'a>) + Clone + 'this,
     {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        let callback_rc = Rc::new(RefCell::new(callback));
-
         let threadtrack = if let Some(ref mut obj) = self.threadtrack {
-            let cb_clone = callback_rc.clone();
-            let cb: Box<dyn FnMut(Event<'_>) + 'this> = Box::new(move |event| {
-                cb_clone.borrow_mut()(event);
-            });
-            Some(obj.build(cb)?)
+            Some(obj.build(callback.clone())?)
         } else {
             None
         };
 
         let cpuutil = if let Some(ref mut obj) = self.cpuutils {
-            let cb_clone = callback_rc.clone();
-            let cb: Box<dyn FnMut(Event<'_>) + 'this> = Box::new(move |event| {
-                cb_clone.borrow_mut()(event);
-            });
-            Some(obj.build(cb)?)
+            Some(obj.build(callback.clone())?)
         } else {
             None
         };
@@ -94,18 +81,13 @@ impl BpfObject {
         Ok(BpfConsumer {
             threadtrack,
             cpuutil,
-            _phantom: std::marker::PhantomData,
         })
     }
 }
 
-type BoxedEventHandler<'a> = Box<dyn FnMut(Event<'_>) + 'a>;
-
-pub struct BpfConsumer<'this, F>
-{
-    threadtrack: Option<threadtrack::ThreadTracker<'this, BoxedEventHandler<'this>>>,
-    cpuutil: Option<cpuutil::CpuUtil<'this, BoxedEventHandler<'this>>>,
-    _phantom: std::marker::PhantomData<F>,
+pub struct BpfConsumer<'this, F> {
+    threadtrack: Option<threadtrack::ThreadTracker<'this, F>>,
+    cpuutil: Option<cpuutil::CpuUtil<'this, F>>,
 }
 
 impl<'this, F> BpfConsumer<'this, F>
@@ -116,11 +98,9 @@ where
         if let Some(ref mut tracker) = self.threadtrack {
             tracker.consume()?;
         }
-
         if let Some(ref mut util) = self.cpuutil {
             util.consume()?;
         }
-
         Ok(())
     }
 
@@ -128,11 +108,9 @@ where
         if let Some(ref mut tracker) = self.threadtrack {
             tracker.poll(timeout)?;
         }
-
         if let Some(ref mut util) = self.cpuutil {
             util.poll(timeout)?;
         }
-
         Ok(())
     }
 }

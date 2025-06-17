@@ -96,8 +96,7 @@ struct ThreadStats {
     min_timestamp: Option<u64>,
 }
 
-pub struct CpuUtil<'this, F>
-{
+pub struct CpuUtil<'this, F> {
     _skel: CpuutilSkel<'this>,
     ringbuf: libbpf_rs::RingBuffer<'this>,
     callback: Rc<RefCell<F>>,
