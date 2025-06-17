@@ -75,71 +75,7 @@ impl Consumer {
     }
 
     #[inline(always)]
-    pub fn iter(&mut self) -> ConsumerIter {
-        ConsumerIter::new(&self.ringbuf)
-    }
-
-    pub fn wait(&mut self) -> Result<(), MpscBufError> {
-        trace!("consumer wait start");
-
-        self.ringbuf
-            .metadata()
-            .consumer_waiting
-            .store(true, crate::sync::Ordering::Relaxed);
-
-        let result = self.notification.wait();
-
-        self.ringbuf
-            .metadata()
-            .consumer_waiting
-            .store(false, crate::sync::Ordering::Relaxed);
-
-        trace!(success = result.is_ok(), "consumer wait end");
-
-        result
-    }
-
-    pub fn available_records(&self) -> u64 {
-        let prod_pos = self.ringbuf.producer_pos();
-        let cons_pos = self.ringbuf.consumer_pos();
-
-        prod_pos.saturating_sub(cons_pos)
-    }
-
-    /// Get the total number of dropped records.
-    ///
-    /// This counter tracks records that were intentionally dropped by producers
-    /// due to insufficient space or other conditions.
-    pub fn dropped(&self) -> u64 {
-        self.ringbuf.dropped()
-    }
-}
-
-impl<'a> IntoIterator for &'a mut Consumer {
-    type Item = Record<'a>;
-    type IntoIter = ConsumerIter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-pub struct ConsumerIter<'a> {
-    ringbuf: &'a RingBuf,
-}
-
-impl<'a> ConsumerIter<'a> {
-    #[inline(always)]
-    fn new(ringbuf: &'a RingBuf) -> Self {
-        ConsumerIter { ringbuf }
-    }
-}
-
-impl<'a> Iterator for ConsumerIter<'a> {
-    type Item = Record<'a>;
-
-    #[inline(always)]
-    fn next(&mut self) -> Option<Self::Item> {
+    pub fn consume(&mut self) -> Option<Record<'_>> {
         loop {
             let cons_pos = self.ringbuf.consumer_pos();
             let prod_pos = self.ringbuf.producer_pos();
@@ -192,7 +128,11 @@ impl<'a> Iterator for ConsumerIter<'a> {
                     "consumer record consumed"
                 );
 
-                return Some(Record::new(self.ringbuf, record_data, cons_pos + total_len));
+                return Some(Record::new(
+                    &self.ringbuf,
+                    record_data,
+                    cons_pos + total_len,
+                ));
             } else {
                 trace!(
                     cons_pos = cons_pos,
@@ -203,6 +143,41 @@ impl<'a> Iterator for ConsumerIter<'a> {
                 self.ringbuf.advance_consumer(cons_pos + total_len);
             }
         }
+    }
+
+    pub fn wait(&mut self) -> Result<(), MpscBufError> {
+        trace!("consumer wait start");
+
+        self.ringbuf
+            .metadata()
+            .consumer_waiting
+            .store(true, crate::sync::Ordering::Relaxed);
+
+        let result = self.notification.wait();
+
+        self.ringbuf
+            .metadata()
+            .consumer_waiting
+            .store(false, crate::sync::Ordering::Relaxed);
+
+        trace!(success = result.is_ok(), "consumer wait end");
+
+        result
+    }
+
+    pub fn available_records(&self) -> u64 {
+        let prod_pos = self.ringbuf.producer_pos();
+        let cons_pos = self.ringbuf.consumer_pos();
+
+        prod_pos.saturating_sub(cons_pos)
+    }
+
+    /// Get the total number of dropped records.
+    ///
+    /// This counter tracks records that were intentionally dropped by producers
+    /// due to insufficient space or other conditions.
+    pub fn dropped(&self) -> u64 {
+        self.ringbuf.dropped()
     }
 }
 

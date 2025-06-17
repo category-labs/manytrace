@@ -76,7 +76,7 @@ fn test_basic_span(mut setup: TestSetup) {
 
     let mut span_count = 0;
     let mut _other_count = 0;
-    for record in setup.consumer.iter() {
+    while let Some(record) = setup.consumer.consume() {
         match record.as_event() {
             Ok(protocol::ArchivedEvent::Span(span)) => {
                 span_count += 1;
@@ -105,7 +105,7 @@ fn test_span_with_fields(mut setup: TestSetup) {
     let mut found_process_name = false;
     let mut found_thread_name = false;
 
-    for record in setup.consumer.iter() {
+    while let Some(record) = setup.consumer.consume() {
         match record.as_event() {
             Ok(protocol::ArchivedEvent::Span(span)) => {
                 if span.name.as_bytes() == b"my_span" {
@@ -156,7 +156,7 @@ fn test_thread_process_names(mut setup: TestSetup) {
     let mut found_thread_name = false;
     let mut found_event = false;
 
-    for record in setup.consumer.iter() {
+    while let Some(record) = setup.consumer.consume() {
         match record.as_event() {
             Ok(protocol::ArchivedEvent::ProcessName(process)) => {
                 found_process_name = true;

@@ -123,7 +123,7 @@
 //! ```rust
 //! # use mpscbuf::Consumer;
 //! # let mut consumer = Consumer::new(1024 * 1024)?;
-//! for record in consumer.iter() {
+//! while let Some(record) = consumer.next() {
 //!     let data = record.as_slice();
 //!     // Process data...
 //!     // Automatically consumed when dropped
@@ -138,7 +138,7 @@
 //! # let mut consumer = Consumer::new(1024 * 1024)?;
 //! loop {
 //!     let mut processed = 0;
-//!     for record in consumer.iter() {
+//!     while let Some(record) = consumer.next() {
 //!         // Process record...
 //!         processed += 1;
 //!     }
@@ -186,7 +186,7 @@
 //! # Ok::<(), mpscbuf::MpscBufError>(())
 //! ```
 
-pub use consumer::{Consumer, ConsumerIter, Record};
+pub use consumer::{Consumer, Record};
 pub use error::MpscBufError;
 pub use producer::{Producer, ReservedBuffer, WakeupStrategy};
 

@@ -1,4 +1,4 @@
-use mpscbuf::{Consumer as MpscConsumer, ConsumerIter, Producer as MpscProducer};
+use mpscbuf::{Consumer as MpscConsumer, Producer as MpscProducer};
 use protocol::{ArchivedEvent, Event};
 
 use crate::Result;
@@ -36,9 +36,9 @@ impl Consumer {
         Ok(Consumer { inner })
     }
 
-    /// Iterate over available events.
-    pub fn iter(&mut self) -> EventIter {
-        EventIter::new(&mut self.inner)
+    /// Get the next available event.
+    pub fn consume(&mut self) -> Option<Record> {
+        self.inner.consume().map(Record)
     }
 
     /// Block until new events are available.
@@ -69,19 +69,6 @@ impl Consumer {
     }
 }
 
-/// Iterator over events in the consumer buffer.
-pub struct EventIter<'a> {
-    iterator: ConsumerIter<'a>,
-}
-
-impl<'a> EventIter<'a> {
-    fn new(consumer: &'a mut MpscConsumer) -> Self {
-        EventIter {
-            iterator: consumer.iter(),
-        }
-    }
-}
-
 /// A single event record from the buffer.
 pub struct Record<'a>(mpscbuf::Record<'a>);
 
@@ -89,14 +76,6 @@ impl<'a> Record<'a> {
     /// Access the event data.
     pub fn as_event(&self) -> std::result::Result<&ArchivedEvent, rkyv::rancor::Error> {
         rkyv::access::<ArchivedEvent, rkyv::rancor::Error>(self.0.as_slice())
-    }
-}
-
-impl<'a> Iterator for EventIter<'a> {
-    type Item = Record<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iterator.next().map(Record)
     }
 }
 
@@ -134,7 +113,7 @@ mod tests {
         producer.submit(&counter).unwrap();
 
         let mut events_received = 0;
-        for record in consumer.iter() {
+        while let Some(record) = consumer.consume() {
             if let Ok(archived_event) = record.as_event() {
                 match archived_event {
                     protocol::ArchivedEvent::Counter(archived_counter) => {

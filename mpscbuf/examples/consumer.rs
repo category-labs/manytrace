@@ -138,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("starting message consumption");
 
             loop {
-                for record in &mut consumer {
+                while let Some(record) = consumer.consume() {
                     let receive_time = get_timestamp_ns();
 
                     let data = record.as_slice();

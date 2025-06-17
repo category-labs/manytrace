@@ -243,7 +243,7 @@ fn main() -> Result<()> {
         if let Err(e) = client.send_continue() {
             info!("failed to send keepalive: {}", e);
         }
-        for record in consumer.iter() {
+        while let Some(record) = consumer.consume() {
             match record.as_event() {
                 Ok(event) => converter.convert_event(event),
                 Err(e) => info!("failed to deserialize event: {}", e),

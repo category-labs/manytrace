@@ -51,7 +51,7 @@ mod tests {
 
             let mut count = 0;
             let mut producer_counts = vec![0; num_producers];
-            for record in consumer.iter() {
+            while let Some(record) = consumer.consume() {
                 let data = std::str::from_utf8(record.as_slice()).unwrap();
                 for (producer_id, count) in producer_counts.iter_mut().enumerate() {
                     if data.starts_with(&format!("p{}_", producer_id)) {
@@ -65,7 +65,7 @@ mod tests {
             for handle in handles {
                 handle.join().unwrap();
             }
-            for record in consumer.iter() {
+            while let Some(record) = consumer.consume() {
                 let data = std::str::from_utf8(record.as_slice()).unwrap();
                 for (producer_id, count) in producer_counts.iter_mut().enumerate() {
                     if data.starts_with(&format!("p{}_", producer_id)) {
@@ -119,7 +119,7 @@ mod tests {
 
             let mut received = vec![];
             while received.len() < num_messages {
-                for record in consumer.iter() {
+                while let Some(record) = consumer.consume() {
                     let data = std::str::from_utf8(record.as_slice()).unwrap();
                     received.push(data.to_string());
                     if received.len() >= num_messages {

@@ -21,7 +21,7 @@
 //!     timestamp: 123456789,
 //!     tid: 1,
 //!     pid: 100,
-//!     labels: Labels::new(),
+//!     labels: std::borrow::Cow::Owned(Labels::new()),
 //! });
 //! agent.submit(&event)?;
 //!
@@ -29,7 +29,7 @@
 //! client.send_continue()?;
 //!
 //! // Read events on consumer side
-//! for record in consumer.iter() {
+//! while let Some(record) = consumer.consume() {
 //!     if let Ok(event) = record.as_event() {
 //!         // Process event
 //!     }

@@ -293,12 +293,13 @@ mod tests {
             reserved[..msg.len()].copy_from_slice(msg);
         }
         let mut count = 0;
-
-        for (i, record) in consumer.iter().enumerate() {
+        let mut i = 0;
+        while let Some(record) = consumer.consume() {
             let data = record.as_slice();
             let expected_len = messages[i].len();
             assert_eq!(&data[..expected_len], messages[i]);
             count += 1;
+            i += 1;
         }
 
         assert_eq!(count, messages.len());
@@ -391,7 +392,7 @@ mod tests {
             let mut count = 0;
 
             while count < num_messages {
-                for record in &mut consumer {
+                while let Some(record) = consumer.consume() {
                     let data = record.as_slice().to_vec();
                     received_messages.push(data);
                     count += 1;
@@ -446,7 +447,9 @@ mod tests {
         let consumer_handle = thread::spawn(move || {
             let mut count = 0;
             while count < num_messages {
-                consumer.iter().for_each(|_| count += 1);
+                while consumer.consume().is_some() {
+                    count += 1;
+                }
                 if count < num_messages && consumer.wait().is_err() {
                     break;
                 }
@@ -500,7 +503,9 @@ mod tests {
         let consumer_handle = thread::spawn(move || {
             let mut count = 0;
             while count < num_messages {
-                consumer.iter().for_each(|_| count += 1);
+                while consumer.consume().is_some() {
+                    count += 1;
+                }
                 if count < num_messages && consumer.wait().is_err() {
                     break;
                 }
@@ -535,7 +540,7 @@ mod tests {
 
             consumer.wait()?;
 
-            for record in consumer.iter() {
+            while let Some(record) = consumer.consume() {
                 let msg = std::str::from_utf8(record.as_slice()).unwrap().to_string();
                 messages.push(msg);
             }
@@ -575,7 +580,7 @@ mod tests {
 
         let consumer_handle = thread::spawn(move || -> Result<(), MpscBufError> {
             loop {
-                if let Some(record) = consumer.iter().next() {
+                if let Some(record) = consumer.consume() {
                     assert_eq!(record.as_slice(), b"test message");
                     return Ok(());
                 }
