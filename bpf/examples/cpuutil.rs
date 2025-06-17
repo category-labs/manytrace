@@ -1,4 +1,4 @@
-use bpf::{Consumer, CpuUtilBuilder};
+use bpf::{cpuutil, CpuUtilConfig};
 use protocol::Event;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,7 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("\nReporting aggregated CPU time per thread every second:\n");
 
-    let mut builder = CpuUtilBuilder::new().interval_ms(1000);
+    let mut builder = cpuutil::Object::new(CpuUtilConfig {
+        interval_ms: 1000,
+        pid_filters: vec![std::process::id()],
+    });
     let mut tracker = builder.build(|event: Event| {
         if let Event::Counter(counter) = event {
             match counter.name {
@@ -40,8 +43,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     })?;
-
-    tracker.track_tgid(std::process::id())?;
 
     while running.load(Ordering::SeqCst) {
         tracker.consume()?;

@@ -4,10 +4,11 @@ mod threadtrack_skel {
 
 use threadtrack_skel::*;
 
-use crate::{BpfError, Consumer};
+use crate::BpfError;
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::{set_print, OpenObject, PrintLevel, RingBufferBuilder};
 use protocol::{Event, ProcessName, ThreadName};
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::fs;
@@ -16,6 +17,9 @@ use std::path::Path;
 use std::rc::Rc;
 use std::str;
 use std::time::Duration;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ThreadTrackerConfig {}
 
 #[repr(C)]
 #[derive(Debug)]
@@ -57,17 +61,17 @@ impl<'a> TryFrom<&'a [u8]> for &'a ThreadEvent {
     }
 }
 
-pub struct ThreadTrackerBuilder {
+pub struct Object {
     object: MaybeUninit<libbpf_rs::OpenObject>,
 }
 
-impl Default for ThreadTrackerBuilder {
+impl Default for Object {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ThreadTrackerBuilder {
+impl Object {
     pub fn new() -> Self {
         Self {
             object: MaybeUninit::uninit(),
@@ -83,8 +87,6 @@ impl ThreadTrackerBuilder {
 }
 
 pub struct ThreadTracker<'this, F>
-where
-    F: for<'a> FnMut(Event<'a>),
 {
     _skel: ThreadtrackSkel<'this>,
     ringbuf: libbpf_rs::RingBuffer<'this>,
@@ -241,13 +243,8 @@ where
 
         Ok(())
     }
-}
 
-impl<'this, F> Consumer for ThreadTracker<'this, F>
-where
-    F: for<'a> FnMut(Event<'a>) + 'this,
-{
-    fn consume(&mut self) -> Result<(), BpfError> {
+    pub fn consume(&mut self) -> Result<(), BpfError> {
         if !self.proc_scanned {
             self.scan_proc()?;
             self.proc_scanned = true;

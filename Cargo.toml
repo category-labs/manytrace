@@ -28,8 +28,10 @@ parking_lot = "0.12"
 plain = "0.2"
 rkyv = { version = "0.8.10", features = ["alloc", "bytecheck"] }
 rstest = "0.23"
+serde = { version = "1.0", features = ["derive"] }
 tempfile = "3.0"
 thiserror = "2.0"
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 vmlinux = { git = "https://github.com/libbpf/vmlinux.h.git", rev = "83a228cf37fc65f2d14e4896a04922b5ee531a94" }

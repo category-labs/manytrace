@@ -4,11 +4,12 @@ mod cpuutil_skel {
 
 use cpuutil_skel::*;
 
-use crate::{perf_event, BpfError, Consumer};
+use crate::{perf_event, BpfError};
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::{set_print, MapCore, MapFlags, OpenObject, PrintLevel, RingBufferBuilder};
 use libbpf_sys::{PERF_COUNT_SW_CPU_CLOCK, PERF_TYPE_SOFTWARE};
 use protocol::{Counter, Event, Labels};
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -16,6 +17,55 @@ use std::convert::TryFrom;
 use std::mem::MaybeUninit;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpuUtilConfig {
+    #[serde(default = "default_interval_ms")]
+    pub interval_ms: u64,
+    #[serde(default)]
+    pub pid_filters: Vec<u32>,
+}
+
+impl Default for CpuUtilConfig {
+    fn default() -> Self {
+        Self {
+            interval_ms: default_interval_ms(),
+            pid_filters: Vec::new(),
+        }
+    }
+}
+
+fn default_interval_ms() -> u64 {
+    1000
+}
+
+pub struct Object {
+    object: MaybeUninit<libbpf_rs::OpenObject>,
+    config: CpuUtilConfig,
+}
+
+impl Object {
+    pub fn new(config: CpuUtilConfig) -> Self {
+        Self {
+            object: MaybeUninit::uninit(),
+            config,
+        }
+    }
+
+    pub fn build<'bd, F>(&'bd mut self, callback: F) -> Result<CpuUtil<'bd, F>, BpfError>
+    where
+        F: for<'a> FnMut(Event<'a>) + 'bd,
+    {
+        let mut util =
+            CpuUtil::new_with_debug(&mut self.object, callback, self.config.interval_ms, false)?;
+
+        for pid in &self.config.pid_filters {
+            util.add_pid_filter(*pid)?;
+        }
+
+        Ok(util)
+    }
+}
 
 #[repr(C)]
 #[derive(Debug)]
@@ -39,38 +89,6 @@ impl<'a> TryFrom<&'a [u8]> for &'a CpuEvent {
     }
 }
 
-pub struct CpuUtilBuilder {
-    object: MaybeUninit<libbpf_rs::OpenObject>,
-    interval_ms: u64,
-}
-
-impl Default for CpuUtilBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CpuUtilBuilder {
-    pub fn new() -> Self {
-        Self {
-            object: MaybeUninit::uninit(),
-            interval_ms: 1000, // Default 1 second interval
-        }
-    }
-
-    pub fn interval_ms(mut self, ms: u64) -> Self {
-        self.interval_ms = ms;
-        self
-    }
-
-    pub fn build<'bd, F>(&'bd mut self, callback: F) -> Result<CpuUtil<'bd, F>, BpfError>
-    where
-        F: for<'a> FnMut(Event<'a>) + 'bd,
-    {
-        CpuUtil::new_with_debug(&mut self.object, callback, self.interval_ms, false)
-    }
-}
-
 #[derive(Default)]
 struct ThreadStats {
     cpu_time_ns: u64,
@@ -79,8 +97,6 @@ struct ThreadStats {
 }
 
 pub struct CpuUtil<'this, F>
-where
-    F: for<'a> FnMut(Event<'a>),
 {
     _skel: CpuutilSkel<'this>,
     ringbuf: libbpf_rs::RingBuffer<'this>,
@@ -258,13 +274,17 @@ where
 
         cpu_timestamps.clear();
     }
-}
 
-impl<'this, F> Consumer for CpuUtil<'this, F>
-where
-    F: for<'a> FnMut(Event<'a>) + 'this,
-{
-    fn consume(&mut self) -> Result<(), BpfError> {
+    pub fn add_pid_filter(&mut self, pid: u32) -> Result<(), BpfError> {
+        self._skel
+            .maps
+            .tracked_tgids
+            .update(&pid.to_le_bytes(), &1u32.to_le_bytes(), MapFlags::ANY)
+            .map_err(|e| BpfError::MapError(format!("failed to add PID filter: {}", e)))?;
+        Ok(())
+    }
+
+    pub fn consume(&mut self) -> Result<(), BpfError> {
         self.ringbuf
             .consume()
             .map_err(|e| BpfError::MapError(format!("failed to consume ring buffer: {}", e)))?;
