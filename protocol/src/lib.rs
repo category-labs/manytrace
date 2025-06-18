@@ -39,6 +39,24 @@ impl<'a> Default for Labels<'a> {
     }
 }
 
+impl<'a> InternedData<'a> {
+    pub fn new() -> Self {
+        InternedData {
+            function_names: Vec::new(),
+            frames: Vec::new(),
+            callstacks: Vec::new(),
+            mappings: Vec::new(),
+            build_ids: Vec::new(),
+        }
+    }
+}
+
+impl<'a> Default for InternedData<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Archive, Serialize, Deserialize)]
 pub struct Counter<'a> {
     #[rkyv(with = InlineAsBox)]
@@ -90,6 +108,66 @@ pub struct ProcessName<'a> {
     pub pid: i32,
 }
 
+#[derive(Archive, Serialize, Deserialize)]
+pub struct InternedString<'a> {
+    pub iid: u64,
+    #[rkyv(with = InlineAsBox)]
+    pub str: &'a str,
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+pub struct Frame {
+    pub iid: u64,
+    pub function_name_id: u64,
+    pub mapping_id: u64,
+    pub rel_pc: u64,
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+pub struct Callstack {
+    pub iid: u64,
+    pub frame_ids: Vec<u64>,
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+pub struct Mapping {
+    pub iid: u64,
+    pub build_id: u64,
+    pub exact_offset: u64,
+    pub start_offset: u64,
+    pub start: u64,
+    pub end: u64,
+    pub load_bias: u64,
+    pub path_string_ids: Vec<u64>,
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+pub struct InternedData<'a> {
+    pub function_names: Vec<InternedString<'a>>,
+    pub frames: Vec<Frame>,
+    pub callstacks: Vec<Callstack>,
+    pub mappings: Vec<Mapping>,
+    pub build_ids: Vec<InternedString<'a>>,
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+pub struct Sample {
+    pub cpu: u32,
+    pub pid: i32,
+    pub tid: i32,
+    pub timestamp: u64,
+    pub callstack_iid: u64,
+    pub cpu_mode: CpuMode,
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[rkyv(compare(PartialEq), derive(Debug))]
+pub enum CpuMode {
+    Unknown,
+    Kernel,
+    User,
+}
+
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[rkyv(compare(PartialEq), derive(Debug))]
 pub enum LogLevel {
@@ -107,6 +185,8 @@ pub enum Event<'a> {
     Instant(Instant<'a>),
     ThreadName(ThreadName<'a>),
     ProcessName(ProcessName<'a>),
+    InternedData(InternedData<'a>),
+    Sample(Sample),
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -461,6 +541,109 @@ mod tests {
                 }
                 _ => panic!("mismatched event variants"),
             }
+        }
+    }
+
+    #[test]
+    fn test_interned_data_serialization() {
+        let mut interned_data = InternedData::new();
+
+        interned_data.function_names.push(InternedString {
+            iid: 1,
+            str: "main",
+        });
+        interned_data.function_names.push(InternedString {
+            iid: 2,
+            str: "process_data",
+        });
+
+        interned_data.frames.push(Frame {
+            iid: 1,
+            function_name_id: 1,
+            mapping_id: 1,
+            rel_pc: 0x1000,
+        });
+        interned_data.frames.push(Frame {
+            iid: 2,
+            function_name_id: 2,
+            mapping_id: 1,
+            rel_pc: 0x2000,
+        });
+
+        interned_data.callstacks.push(Callstack {
+            iid: 1,
+            frame_ids: vec![1, 2],
+        });
+
+        interned_data.mappings.push(Mapping {
+            iid: 1,
+            build_id: 1,
+            exact_offset: 0,
+            start_offset: 0,
+            start: 0x400000,
+            end: 0x500000,
+            load_bias: 0,
+            path_string_ids: vec![],
+        });
+
+        interned_data.build_ids.push(InternedString {
+            iid: 1,
+            str: "abcdef123456",
+        });
+
+        let event = Event::InternedData(interned_data);
+        let buf = to_bytes_in::<_, Error>(&event, Vec::new())
+            .expect("interned data serialization failed");
+        let archived = rkyv::access::<ArchivedEvent, rkyv::rancor::Error>(&buf)
+            .expect("failed to access archived event");
+
+        match archived {
+            ArchivedEvent::InternedData(data) => {
+                assert_eq!(data.function_names.len(), 2);
+                assert_eq!(data.function_names[0].iid, 1);
+                assert_eq!(data.function_names[0].str.as_bytes(), b"main");
+                assert_eq!(data.function_names[1].iid, 2);
+                assert_eq!(data.function_names[1].str.as_bytes(), b"process_data");
+
+                assert_eq!(data.frames.len(), 2);
+                assert_eq!(data.frames[0].iid, 1);
+                assert_eq!(data.frames[0].function_name_id, 1);
+                assert_eq!(data.frames[0].rel_pc, 0x1000);
+
+                assert_eq!(data.callstacks.len(), 1);
+                assert_eq!(data.callstacks[0].iid, 1);
+                assert_eq!(data.callstacks[0].frame_ids.len(), 2);
+            }
+            _ => panic!("expected interned data event"),
+        }
+    }
+
+    #[test]
+    fn test_sample_serialization() {
+        let sample = Sample {
+            cpu: 0,
+            pid: 1234,
+            tid: 5678,
+            timestamp: 1000000,
+            callstack_iid: 1,
+            cpu_mode: CpuMode::User,
+        };
+
+        let event = Event::Sample(sample);
+        let buf = to_bytes_in::<_, Error>(&event, Vec::new()).expect("sample serialization failed");
+        let archived = rkyv::access::<ArchivedEvent, rkyv::rancor::Error>(&buf)
+            .expect("failed to access archived event");
+
+        match archived {
+            ArchivedEvent::Sample(s) => {
+                assert_eq!(s.cpu, 0);
+                assert_eq!(s.pid, 1234);
+                assert_eq!(s.tid, 5678);
+                assert_eq!(s.timestamp, 1000000);
+                assert_eq!(s.callstack_iid, 1);
+                assert_eq!(s.cpu_mode, CpuMode::User);
+            }
+            _ => panic!("expected sample event"),
         }
     }
 

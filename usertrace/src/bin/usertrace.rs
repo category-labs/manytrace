@@ -58,6 +58,8 @@ impl TraceConverter {
             ArchivedEvent::Instant(instant) => self.add_instant(instant),
             ArchivedEvent::ThreadName(thread_name) => self.add_thread_name(thread_name),
             ArchivedEvent::ProcessName(process_name) => self.add_process_name(process_name),
+            ArchivedEvent::InternedData(_) => {}
+            ArchivedEvent::Sample(_) => {}
         }
     }
 
