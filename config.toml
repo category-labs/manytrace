@@ -1,0 +1,11 @@
+[profiler]
+sample_freq = 999          
+kernel_samples = true    
+user_samples = true      
+pid_filters = [264373]          
+
+[thread_tracker]
+
+[cpu_util]
+interval_ms = 100         
+pid_filters = [264373]          

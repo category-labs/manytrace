@@ -162,17 +162,13 @@ where
             .load()
             .map_err(|e| BpfError::LoadError(format!("failed to load bpf program: {}", e)))?;
 
-        if !config.pid_filters.is_empty() {
-            for &pid in &config.pid_filters {
-                let key = pid.to_ne_bytes();
-                let value = 1u8.to_ne_bytes();
-                skel.maps
-                    .filter_tgid
-                    .update(&key, &value, libbpf_rs::MapFlags::ANY)
-                    .map_err(|e| {
-                        BpfError::MapError(format!("failed to update filter map: {}", e))
-                    })?;
-            }
+        for &pid in &config.pid_filters {
+            let key = pid.to_ne_bytes();
+            let value = 1u8.to_ne_bytes();
+            skel.maps
+                .filter_tgid
+                .update(&key, &value, libbpf_rs::MapFlags::ANY)
+                .map_err(|e| BpfError::MapError(format!("failed to update filter map: {}", e)))?;
         }
 
         let perf_type = libbpf_sys::PERF_TYPE_SOFTWARE;
@@ -357,19 +353,13 @@ struct InternState<'a> {
 
 impl<'a> InternState<'a> {
     fn new() -> Self {
-        let mut state = Self {
-            string_id_counter: 1,
+        let state: InternState<'a> = Self {
+            string_id_counter: 0,
             frame_id_counter: 0,
             function_names: Vec::new(),
             frames: Vec::new(),
             frame_ids: Vec::new(),
         };
-
-        state.function_names.push(InternedString {
-            iid: 0,
-            str: Cow::Borrowed("<unknown>"),
-        });
-
         state
     }
 

@@ -7,7 +7,7 @@ use rkyv::api::high::{to_bytes_in, HighSerializer};
 use rkyv::rancor::{fail, Fallible};
 use rkyv::ser::allocator::ArenaHandle;
 use rkyv::ser::{Positional, Writer};
-use rkyv::with::{AsOwned, Identity, InlineAsBox, MapKV};
+use rkyv::with::{AsOwned, Identity, InlineAsBox, Map, MapKV};
 use rkyv::{Archive, Deserialize, Serialize};
 
 #[derive(Archive, Deserialize, Serialize, Clone)]
@@ -67,6 +67,8 @@ pub struct Counter<'a> {
     pub pid: i32,
     #[rkyv(with = AsOwned)]
     pub labels: Cow<'a, Labels<'a>>,
+    #[rkyv(with = Map<InlineAsBox>)]
+    pub unit: Option<&'a str>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -350,6 +352,7 @@ mod tests {
             pid: 123,
             tid: 456,
             timestamp: 1000,
+            unit: None,
         }
     }
 

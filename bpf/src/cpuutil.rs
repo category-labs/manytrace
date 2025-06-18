@@ -56,12 +56,12 @@ impl Object {
     where
         F: for<'a> FnMut(Event<'a>) + 'bd,
     {
-        let mut util = CpuUtil::new(&mut self.object, callback, self.config.interval_ms)?;
-
-        for pid in &self.config.pid_filters {
-            util.add_pid_filter(*pid)?;
-        }
-
+        let util = CpuUtil::new(
+            &mut self.object,
+            self.config.clone(),
+            callback,
+            self.config.interval_ms,
+        )?;
         Ok(util)
     }
 }
@@ -112,6 +112,7 @@ where
 {
     fn new(
         open_object: &'this mut MaybeUninit<OpenObject>,
+        config: CpuUtilConfig,
         callback: F,
         interval_ms: u64,
     ) -> Result<Self, BpfError> {
@@ -124,6 +125,15 @@ where
         let mut skel = open_skel
             .load()
             .map_err(|e| BpfError::LoadError(format!("failed to load bpf program: {}", e)))?;
+
+        for &pid in &config.pid_filters {
+            let key = pid.to_ne_bytes();
+            let value = 1u32.to_ne_bytes();
+            skel.maps
+                .tracked_tgids
+                .update(&key, &value, libbpf_rs::MapFlags::ANY)
+                .map_err(|e| BpfError::MapError(format!("failed to update filter map: {}", e)))?;
+        }
 
         skel.attach()
             .map_err(|e| BpfError::AttachError(format!("failed to attach bpf programs: {}", e)))?;
@@ -248,6 +258,7 @@ where
                     tid,
                     pid,
                     labels: Cow::Owned(Labels::new()),
+                    unit: Some("ns"),
                 });
                 callback(cpu_counter);
             }
@@ -260,6 +271,7 @@ where
                     tid,
                     pid,
                     labels: Cow::Owned(Labels::new()),
+                    unit: Some("ns"),
                 });
                 callback(kernel_counter);
             }

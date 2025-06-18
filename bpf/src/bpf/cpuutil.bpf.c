@@ -177,7 +177,7 @@ int handle_boundary_event(void *ctx)
     u32 tid = pid_tgid;
     u32 tgid = pid_tgid >> 32;
     
-    if (state->tid != tid || tid == 0) {
+    if (state->tid != tid || tid == 0 || !should_track_tgid(tgid)) {
         return 0;
     }
 

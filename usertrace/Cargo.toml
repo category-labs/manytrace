@@ -9,10 +9,16 @@ license.workspace = true
 name = "usertrace"
 path = "src/bin/usertrace.rs"
 
+[[bin]]
+name = "bpftrace"
+path = "src/bin/bpftrace.rs"
+
 [dependencies]
 agent = { path = "../agent" }
 protocol = { path = "../protocol" }
 chrome-trace-format = { path = "../chrome-trace-format" }
+bpf = { path = "../bpf" }
+perfetto-format = { path = "../perfetto-format" }
 clap.workspace = true
 eyre.workspace = true
 tracing.workspace = true

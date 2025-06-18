@@ -269,6 +269,7 @@ mod tests {
             tid: 1,
             pid: 2,
             labels: Cow::Owned(Labels::new()),
+            unit: None,
         });
 
         agent.submit(&event).unwrap();
@@ -294,6 +295,7 @@ mod tests {
             tid: 1,
             pid: 2,
             labels: Cow::Owned(Labels::new()),
+            unit: None,
         });
 
         agent.submit(&event).unwrap();

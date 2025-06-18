@@ -63,6 +63,7 @@ fn create_counter_with_labels(num_labels: usize) -> Counter<'static> {
         tid: 123,
         pid: 456,
         labels: Cow::Owned(labels),
+        unit: Some("unit")
     }
 }
 

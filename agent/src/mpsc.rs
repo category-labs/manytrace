@@ -108,6 +108,7 @@ mod tests {
             tid: 123,
             pid: 456,
             labels: Cow::Owned(Labels::new()),
+            unit: None
         });
 
         producer.submit(&counter).unwrap();

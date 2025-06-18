@@ -2017,9 +2017,11 @@ name = "usertrace"
 version = "0.1.0"
 dependencies = [
  "agent",
+ "bpf",
  "chrome-trace-format",
  "clap",
  "eyre",
+ "perfetto-format",
  "protocol",
  "rkyv",
  "serde",
