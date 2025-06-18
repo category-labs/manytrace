@@ -34,7 +34,7 @@ jobs:
             components: rustfmt
             skip_deps: true
           - name: bpf-root-tests
-            command: sudo -E env "PATH=$PATH" cargo nextest run -p bpf root_tests --include-ignored
+            command: sudo -E env "PATH=$PATH" cargo nextest run -p bpf root_tests --run-ignored
             components: ""
             install_extras: true
     
