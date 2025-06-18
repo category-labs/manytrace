@@ -226,6 +226,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+ "tracing",
  "vmlinux",
 ]
 

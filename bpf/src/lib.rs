@@ -3,6 +3,7 @@ use protocol::Event;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
+use tracing::debug;
 
 pub mod cpuutil;
 mod perf_event;
@@ -15,9 +16,9 @@ pub use threadtrack::ThreadTrackerConfig;
 
 #[derive(Error, Debug)]
 pub enum BpfError {
-    #[error("Failed to load BPF program: {0}")]
+    #[error("failed to load BPF program: {0}")]
     LoadError(String),
-    #[error("Failed to attach BPF program: {0}")]
+    #[error("failed to attach BPF program: {0}")]
     AttachError(String),
     #[error("BPF map operation failed: {0}")]
     MapError(String),
@@ -35,22 +36,58 @@ pub struct BpfConfig {
 
 impl BpfConfig {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, BpfError> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| BpfError::LoadError(format!("Failed to read config file: {}", e)))?;
+        let path = path.as_ref();
+        debug!(path = %path.display(), "loading bpf config");
 
-        toml::from_str(&content)
-            .map_err(|e| BpfError::LoadError(format!("Failed to parse TOML: {}", e)))
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| BpfError::LoadError(format!("failed to read config file: {}", e)))?;
+
+        let config = toml::from_str(&content)
+            .map_err(|e| BpfError::LoadError(format!("failed to parse TOML: {}", e)))?;
+
+        Ok(config)
     }
 
     pub fn from_toml_str(content: &str) -> Result<Self, BpfError> {
-        toml::from_str(content)
-            .map_err(|e| BpfError::LoadError(format!("Failed to parse TOML: {}", e)))
+        let config = toml::from_str(content)
+            .map_err(|e| BpfError::LoadError(format!("failed to parse TOML: {}", e)))?;
+
+        Ok(config)
     }
 
     pub fn build(self) -> Result<BpfObject, BpfError> {
-        let threadtrack = self.thread_tracker.map(|_| threadtrack::Object::new());
-        let cpuutils = self.cpu_util.map(cpuutil::Object::new);
-        let profiler = self.profiler.map(profiler::Object::new);
+        let threadtrack = if let Some(_cfg) = self.thread_tracker {
+            debug!("initializing thread tracker");
+            Some(threadtrack::Object::new())
+        } else {
+            None
+        };
+
+        let cpuutils = if let Some(cfg) = self.cpu_util {
+            debug!(
+                module = "cpuutil",
+                interval_ms = cfg.interval_ms,
+                pid_filters = ?cfg.pid_filters,
+                "initializing cpu utilization monitor"
+            );
+            Some(cpuutil::Object::new(cfg))
+        } else {
+            None
+        };
+
+        let profiler = if let Some(cfg) = self.profiler {
+            debug!(
+                module = "profiler",
+                sample_freq = cfg.sample_freq,
+                kernel_samples = cfg.kernel_samples,
+                user_samples = cfg.user_samples,
+                pid_filters = ?cfg.pid_filters,
+                "initializing profiler"
+            );
+            Some(profiler::Object::new(cfg))
+        } else {
+            None
+        };
 
         Ok(BpfObject {
             symbolizer: Symbolizer::new(),

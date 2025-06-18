@@ -22,6 +22,7 @@ plain = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+tracing = { workspace = true }
 protocol = { path = "../protocol" }
 
 [dev-dependencies]
