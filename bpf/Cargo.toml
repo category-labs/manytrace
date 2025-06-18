@@ -25,6 +25,8 @@ protocol = { path = "../protocol" }
 [dev-dependencies]
 ctrlc = { workspace = true }
 protocol = { path = "../protocol" }
+tempfile = { workspace = true }
+rstest = { workspace = true }
 
 [[example]]
 name = "threadtrack"

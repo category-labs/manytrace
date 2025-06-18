@@ -256,3 +256,98 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod root_tests {
+    use super::*;
+    use rstest::*;
+
+    fn is_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[derive(Debug, Clone)]
+    enum TestEvent {
+        ProcessName { name: String, pid: i32 },
+        ThreadName { name: String, tid: i32, pid: i32 },
+    }
+
+    struct ThreadTrackerFixture {
+        events: Rc<RefCell<Vec<TestEvent>>>,
+    }
+
+    #[fixture]
+    fn threadtrack_setup() -> ThreadTrackerFixture {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        ThreadTrackerFixture { events }
+    }
+
+    #[rstest]
+    #[ignore = "requires root"]
+    fn test_threadtrack_events(threadtrack_setup: ThreadTrackerFixture) {
+        assert!(is_root());
+
+        let events_clone = threadtrack_setup.events.clone();
+
+        let mut object = Object::new();
+        let mut tracker = object
+            .build(move |event| {
+                let test_event = match event {
+                    Event::ProcessName(p) => TestEvent::ProcessName {
+                        name: p.name.to_string(),
+                        pid: p.pid,
+                    },
+                    Event::ThreadName(t) => TestEvent::ThreadName {
+                        name: t.name.to_string(),
+                        tid: t.tid,
+                        pid: t.pid,
+                    },
+                    _ => return,
+                };
+                events_clone.borrow_mut().push(test_event);
+            })
+            .expect("failed to build thread tracker");
+
+        let mut child = std::process::Command::new("ls")
+            .arg("-la")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn test process");
+        let child_pid = child.id() as i32;
+
+        let thread_name = "test_thread";
+        let thread_handle = std::thread::Builder::new()
+            .name(thread_name.to_string())
+            .spawn(move || {})
+            .expect("failed to spawn test thread");
+
+        thread_handle.join().expect("failed to join test thread");
+        let _ = child.wait();
+
+        let _ = tracker.consume();
+        let collected_events = threadtrack_setup.events.borrow();
+        assert!(!collected_events.is_empty(), "no events were captured");
+        let process_events: Vec<_> = collected_events
+            .iter()
+            .filter_map(|e| match e {
+                TestEvent::ProcessName { name, pid } => Some((name, pid)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !process_events.is_empty(),
+            "no process name events captured"
+        );
+        let ls_event = process_events.iter().find(|(_, pid)| **pid == child_pid);
+        assert!(ls_event.is_some(), "ls process event not found");
+        let thread_events: Vec<_> = collected_events
+            .iter()
+            .filter_map(|e| match e {
+                TestEvent::ThreadName { name, tid, pid } => Some((name, tid, pid)),
+                _ => None,
+            })
+            .collect();
+        assert!(!thread_events.is_empty(), "no thread name events captured");
+    }
+}

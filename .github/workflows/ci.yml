@@ -33,6 +33,10 @@ jobs:
             command: cargo fmt --all -- --check
             components: rustfmt
             skip_deps: true
+          - name: bpf-root-tests
+            command: sudo -E env "PATH=$PATH" cargo nextest run -p bpf root_tests --include-ignored
+            components: ""
+            install_extras: true
     
     name: ${{ matrix.name }}
     steps:

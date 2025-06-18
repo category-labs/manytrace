@@ -297,3 +297,173 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod root_tests {
+    use super::*;
+    use rstest::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn is_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[derive(Debug, Clone)]
+    struct TestCounter {
+        name: String,
+        value: f64,
+        #[allow(dead_code)]
+        timestamp: u64,
+        #[allow(dead_code)]
+        tid: i32,
+        pid: i32,
+    }
+
+    struct CpuUtilFixture {
+        events: Rc<RefCell<Vec<TestCounter>>>,
+        current_pid: u32,
+    }
+
+    #[fixture]
+    fn cpuutil_setup() -> CpuUtilFixture {
+        let current_pid = std::process::id();
+        let events = Rc::new(RefCell::new(Vec::new()));
+
+        CpuUtilFixture {
+            events,
+            current_pid,
+        }
+    }
+
+    #[rstest]
+    #[ignore = "requires root"]
+    fn test_cpuutil_events(cpuutil_setup: CpuUtilFixture) {
+        assert!(is_root());
+
+        let events_clone = cpuutil_setup.events.clone();
+
+        let config = CpuUtilConfig {
+            interval_ms: 100,
+            pid_filters: vec![cpuutil_setup.current_pid],
+        };
+
+        let mut object = Object::new(config);
+        let mut cpuutil = object
+            .build(move |event| {
+                if let Event::Counter(c) = event {
+                    let test_counter = TestCounter {
+                        name: c.name.to_string(),
+                        value: c.value,
+                        timestamp: c.timestamp,
+                        tid: c.tid,
+                        pid: c.pid,
+                    };
+                    events_clone.borrow_mut().push(test_counter);
+                }
+            })
+            .expect("failed to build cpu util");
+
+        let start = Instant::now();
+        let mut primes = vec![];
+        while start.elapsed() < Duration::from_millis(300) {
+            for num in 2..5000 {
+                let mut is_prime = true;
+                for i in 2..num {
+                    if num % i == 0 {
+                        is_prime = false;
+                        break;
+                    }
+                }
+                if is_prime {
+                    primes.push(num);
+                }
+            }
+
+            let _ = cpuutil.consume();
+        }
+
+        let _ = cpuutil.consume();
+        let collected_events = cpuutil_setup.events.borrow();
+        assert!(!collected_events.is_empty(), "no events were captured");
+        let cpu_time_events: Vec<_> = collected_events
+            .iter()
+            .filter(|c| c.name == "cpu_time_ns" && c.pid == cpuutil_setup.current_pid as i32)
+            .collect();
+        assert!(
+            !cpu_time_events.is_empty(),
+            "no cpu_time_ns events for current process"
+        );
+
+        for event in &cpu_time_events {
+            assert!(event.value > 0.0, "cpu time should be greater than zero");
+        }
+    }
+
+    #[rstest]
+    #[ignore = "requires root"]
+    fn test_cpuutil_kernel_time(cpuutil_setup: CpuUtilFixture) {
+        assert!(is_root());
+
+        let events_clone = cpuutil_setup.events.clone();
+
+        let config = CpuUtilConfig {
+            interval_ms: 100,
+            pid_filters: vec![cpuutil_setup.current_pid],
+        };
+
+        let mut object = Object::new(config);
+        let mut cpuutil = object
+            .build(move |event| {
+                if let Event::Counter(c) = event {
+                    let test_counter = TestCounter {
+                        name: c.name.to_string(),
+                        value: c.value,
+                        timestamp: c.timestamp,
+                        tid: c.tid,
+                        pid: c.pid,
+                    };
+                    events_clone.borrow_mut().push(test_counter);
+                }
+            })
+            .expect("failed to build cpu util");
+
+        let start = Instant::now();
+        let mut temp_file = NamedTempFile::new().expect("failed to create temp file");
+        let data = vec![0u8; 1024 * 1024]; // 1MB of data
+
+        while start.elapsed() < Duration::from_millis(300) {
+            for _ in 0..10 {
+                temp_file
+                    .write_all(&data)
+                    .expect("failed to write to temp file");
+                temp_file.flush().expect("failed to flush temp file");
+                temp_file
+                    .as_file()
+                    .sync_data()
+                    .expect("failed to sync temp file");
+            }
+
+            let _ = cpuutil.consume();
+        }
+
+        let _ = cpuutil.consume();
+        let collected_events = cpuutil_setup.events.borrow();
+        assert!(!collected_events.is_empty(), "no events were captured");
+
+        let kernel_time_events: Vec<_> = collected_events
+            .iter()
+            .filter(|c| c.name == "kernel_time_ns" && c.pid == cpuutil_setup.current_pid as i32)
+            .collect();
+
+        let cpu_time_events: Vec<_> = collected_events
+            .iter()
+            .filter(|c| c.name == "cpu_time_ns" && c.pid == cpuutil_setup.current_pid as i32)
+            .collect();
+
+        assert!(
+            !cpu_time_events.is_empty() || !kernel_time_events.is_empty(),
+            "should have at least cpu_time or kernel_time events"
+        );
+    }
+}
