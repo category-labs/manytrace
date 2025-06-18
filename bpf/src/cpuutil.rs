@@ -6,7 +6,7 @@ use cpuutil_skel::*;
 
 use crate::{perf_event, BpfError};
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
-use libbpf_rs::{set_print, MapCore, MapFlags, OpenObject, PrintLevel, RingBufferBuilder};
+use libbpf_rs::{MapCore, MapFlags, OpenObject, RingBufferBuilder};
 use libbpf_sys::{PERF_COUNT_SW_CPU_CLOCK, PERF_TYPE_SOFTWARE};
 use protocol::{Counter, Event, Labels};
 use serde::{Deserialize, Serialize};
@@ -56,8 +56,7 @@ impl Object {
     where
         F: for<'a> FnMut(Event<'a>) + 'bd,
     {
-        let mut util =
-            CpuUtil::new_with_debug(&mut self.object, callback, self.config.interval_ms, false)?;
+        let mut util = CpuUtil::new(&mut self.object, callback, self.config.interval_ms)?;
 
         for pid in &self.config.pid_filters {
             util.add_pid_filter(*pid)?;
@@ -97,7 +96,7 @@ struct ThreadStats {
 }
 
 pub struct CpuUtil<'this, F> {
-    _skel: CpuutilSkel<'this>,
+    skel: CpuutilSkel<'this>,
     ringbuf: libbpf_rs::RingBuffer<'this>,
     callback: Rc<RefCell<F>>,
     interval: Duration,
@@ -111,16 +110,11 @@ impl<'this, F> CpuUtil<'this, F>
 where
     F: for<'a> FnMut(Event<'a>) + 'this,
 {
-    fn new_with_debug(
+    fn new(
         open_object: &'this mut MaybeUninit<OpenObject>,
         callback: F,
         interval_ms: u64,
-        debug: bool,
     ) -> Result<Self, BpfError> {
-        if !debug {
-            set_print(Some((PrintLevel::Debug, |_level, _msg| {})));
-        }
-
         let skel_builder = CpuutilSkelBuilder::default();
 
         let open_skel = skel_builder
@@ -191,7 +185,7 @@ where
         };
 
         Ok(CpuUtil {
-            _skel: skel,
+            skel,
             ringbuf,
             callback: callback_rc,
             interval: Duration::from_millis(interval_ms),
@@ -206,7 +200,7 @@ where
         let one: u32 = 1;
         let tgid_bytes = tgid.to_ne_bytes();
         let one_bytes = one.to_ne_bytes();
-        self._skel
+        self.skel
             .maps
             .tracked_tgids
             .update(&tgid_bytes, &one_bytes, MapFlags::ANY)
@@ -216,7 +210,7 @@ where
 
     pub fn untrack_tgid(&mut self, tgid: u32) -> Result<(), BpfError> {
         let tgid_bytes = tgid.to_ne_bytes();
-        self._skel
+        self.skel
             .maps
             .tracked_tgids
             .delete(&tgid_bytes)
@@ -275,7 +269,7 @@ where
     }
 
     pub fn add_pid_filter(&mut self, pid: u32) -> Result<(), BpfError> {
-        self._skel
+        self.skel
             .maps
             .tracked_tgids
             .update(&pid.to_le_bytes(), &1u32.to_le_bytes(), MapFlags::ANY)

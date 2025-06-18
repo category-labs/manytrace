@@ -27,4 +27,5 @@ fn build_bpf(name: &str) {
 fn main() {
     build_bpf("threadtrack");
     build_bpf("cpuutil");
+    build_bpf("profiler");
 }

@@ -111,8 +111,8 @@ pub struct ProcessName<'a> {
 #[derive(Archive, Serialize, Deserialize)]
 pub struct InternedString<'a> {
     pub iid: u64,
-    #[rkyv(with = InlineAsBox)]
-    pub str: &'a str,
+    #[rkyv(with = AsOwned)]
+    pub str: Cow<'a, str>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -550,11 +550,11 @@ mod tests {
 
         interned_data.function_names.push(InternedString {
             iid: 1,
-            str: "main",
+            str: Cow::Borrowed("main"),
         });
         interned_data.function_names.push(InternedString {
             iid: 2,
-            str: "process_data",
+            str: Cow::Borrowed("process_data"),
         });
 
         interned_data.frames.push(Frame {
@@ -588,7 +588,7 @@ mod tests {
 
         interned_data.build_ids.push(InternedString {
             iid: 1,
-            str: "abcdef123456",
+            str: Cow::Borrowed("abcdef123456"),
         });
 
         let event = Event::InternedData(interned_data);
@@ -601,9 +601,12 @@ mod tests {
             ArchivedEvent::InternedData(data) => {
                 assert_eq!(data.function_names.len(), 2);
                 assert_eq!(data.function_names[0].iid, 1);
-                assert_eq!(data.function_names[0].str.as_bytes(), b"main");
+                assert_eq!(data.function_names[0].str.as_ref().as_bytes(), b"main");
                 assert_eq!(data.function_names[1].iid, 2);
-                assert_eq!(data.function_names[1].str.as_bytes(), b"process_data");
+                assert_eq!(
+                    data.function_names[1].str.as_ref().as_bytes(),
+                    b"process_data"
+                );
 
                 assert_eq!(data.frames.len(), 2);
                 assert_eq!(data.frames[0].iid, 1);

@@ -10,7 +10,9 @@ libbpf-cargo = { workspace = true }
 vmlinux = { workspace = true }
 
 [dependencies]
+blazesym = { workspace = true }
 bon = { workspace = true }
+bytemuck = { workspace = true }
 eyre = { workspace = true }
 libbpf-rs = { workspace = true }
 libbpf-sys = { workspace = true }

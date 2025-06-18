@@ -6,7 +6,7 @@ use threadtrack_skel::*;
 
 use crate::BpfError;
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
-use libbpf_rs::{set_print, OpenObject, PrintLevel, RingBufferBuilder};
+use libbpf_rs::{OpenObject, RingBufferBuilder};
 use protocol::{Event, ProcessName, ThreadName};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -82,7 +82,7 @@ impl Object {
     where
         F: for<'a> FnMut(Event<'a>) + 'bd,
     {
-        ThreadTracker::new_with_debug(&mut self.object, callback, false)
+        ThreadTracker::new(&mut self.object, callback)
     }
 }
 
@@ -97,15 +97,7 @@ impl<'this, F> ThreadTracker<'this, F>
 where
     F: for<'a> FnMut(Event<'a>) + 'this,
 {
-    fn new_with_debug(
-        open_object: &'this mut MaybeUninit<OpenObject>,
-        callback: F,
-        debug: bool,
-    ) -> Result<Self, BpfError> {
-        if !debug {
-            set_print(Some((PrintLevel::Debug, |_level, _msg| {})));
-        }
-
+    fn new(open_object: &'this mut MaybeUninit<OpenObject>, callback: F) -> Result<Self, BpfError> {
         let skel_builder = ThreadtrackSkelBuilder::default();
 
         let open_skel = skel_builder

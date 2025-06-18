@@ -1,3 +1,4 @@
+use blazesym::symbolize::Symbolizer;
 use protocol::Event;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -5,9 +6,11 @@ use thiserror::Error;
 
 pub mod cpuutil;
 mod perf_event;
+pub mod profiler;
 pub mod threadtrack;
 
 pub use cpuutil::CpuUtilConfig;
+pub use profiler::ProfilerConfig;
 pub use threadtrack::ThreadTrackerConfig;
 
 #[derive(Error, Debug)]
@@ -26,6 +29,8 @@ pub struct BpfConfig {
     pub thread_tracker: Option<ThreadTrackerConfig>,
     #[serde(default)]
     pub cpu_util: Option<CpuUtilConfig>,
+    #[serde(default)]
+    pub profiler: Option<ProfilerConfig>,
 }
 
 impl BpfConfig {
@@ -45,17 +50,22 @@ impl BpfConfig {
     pub fn build(self) -> Result<BpfObject, BpfError> {
         let threadtrack = self.thread_tracker.map(|_| threadtrack::Object::new());
         let cpuutils = self.cpu_util.map(cpuutil::Object::new);
+        let profiler = self.profiler.map(profiler::Object::new);
 
         Ok(BpfObject {
+            symbolizer: Symbolizer::new(),
             threadtrack,
             cpuutils,
+            profiler,
         })
     }
 }
 
 pub struct BpfObject {
+    symbolizer: Symbolizer,
     threadtrack: Option<threadtrack::Object>,
     cpuutils: Option<cpuutil::Object>,
+    profiler: Option<profiler::Object>,
 }
 
 impl BpfObject {
@@ -78,9 +88,16 @@ impl BpfObject {
             None
         };
 
+        let profiler = if let Some(ref mut obj) = self.profiler {
+            Some(obj.build(callback.clone(), &self.symbolizer)?)
+        } else {
+            None
+        };
+
         Ok(BpfConsumer {
             threadtrack,
             cpuutil,
+            profiler,
         })
     }
 }
@@ -88,6 +105,7 @@ impl BpfObject {
 pub struct BpfConsumer<'this, F> {
     threadtrack: Option<threadtrack::ThreadTracker<'this, F>>,
     cpuutil: Option<cpuutil::CpuUtil<'this, F>>,
+    profiler: Option<profiler::Profiler<'this, F>>,
 }
 
 impl<'this, F> BpfConsumer<'this, F>
@@ -101,6 +119,9 @@ where
         if let Some(ref mut util) = self.cpuutil {
             util.consume()?;
         }
+        if let Some(ref mut prof) = self.profiler {
+            prof.consume()?;
+        }
         Ok(())
     }
 
@@ -110,6 +131,9 @@ where
         }
         if let Some(ref mut util) = self.cpuutil {
             util.poll(timeout)?;
+        }
+        if let Some(ref mut prof) = self.profiler {
+            prof.poll(timeout)?;
         }
         Ok(())
     }
