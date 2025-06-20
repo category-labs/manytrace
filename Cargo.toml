@@ -1,5 +1,5 @@
 [workspace]
-members = ["mpscbuf", "protocol", "agent", "tracing-manytrace", "chrome-trace-format", "perfetto-format", "usertrace", "bpf"]
+members = ["mpscbuf", "protocol", "agent", "tracing-manytrace", "chrome-trace-format", "perfetto-format", "manytrace", "bpf"]
 resolver = "2"
 
 [workspace.package]
@@ -21,6 +21,7 @@ divan = "0.1.21"
 eyre = "0.6"
 governor = "0.7"
 hdrhistogram = "7.5"
+humantime = "2.1"
 libbpf-cargo = "0.25"
 libbpf-rs = "0.25"
 libbpf-sys = "1.5"

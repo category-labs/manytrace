@@ -4,3 +4,4 @@ perf.data*
 *.json
 bpf/src/bpf/*.skel.rs
 *.pftrace
+*.perfetto

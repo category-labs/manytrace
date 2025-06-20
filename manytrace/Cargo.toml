@@ -1,17 +1,13 @@
 [package]
-name = "usertrace"
+name = "manytrace"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "usertrace"
-path = "src/bin/usertrace.rs"
-
-[[bin]]
-name = "bpftrace"
-path = "src/bin/bpftrace.rs"
+name = "manytrace"
+path = "src/bin/manytrace.rs"
 
 [dependencies]
 agent = { path = "../agent" }
@@ -26,3 +22,6 @@ tracing-subscriber.workspace = true
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rkyv.workspace = true
+toml = "0.8"
+ctrlc = "3.4"
+humantime.workspace = true

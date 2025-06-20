@@ -1,11 +1,19 @@
-[profiler]
-sample_freq = 999          
-kernel_samples = true    
-user_samples = true      
-pid_filters = [264373]          
+buffer_size = 2097152
 
-[thread_tracker]
+[bpf.profiler]
+sample_freq = 999
+kernel_samples = true
+user_samples = true
+pid_filters = [30953, 30969]
 
-[cpu_util]
-interval_ms = 100         
-pid_filters = [264373]          
+[bpf.thread_tracker]
+
+[bpf.cpu_util]
+interval_ms = 100
+pid_filters = [30953, 30969]
+
+[[user]]
+socket = "/tmp/user1.sock"
+
+[[user]]
+socket = "/tmp/user2.sock"
