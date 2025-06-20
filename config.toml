@@ -5,6 +5,10 @@ sample_freq = 99
 kernel_samples = true
 user_samples = true
 filter_process = ["continuous"]
+# Symbolization options (all default to true)
+# debug_syms = true     # Enable debug symbol resolution
+# perf_map = false      # Enable perf map support
+map_files = true
 
 [bpf.thread_tracker]
 
@@ -12,9 +16,9 @@ filter_process = ["continuous"]
 frequency = 10
 filter_process = ["continuous", "manytrace"]
 
-[[user]]
-socket = "/tmp/user1.sock"
+# [[user]]
+# socket = "/tmp/user1.sock"
 
-[[user]]
-socket = "/tmp/user2.sock"
-log_filter = "INFO"
+# [[user]]
+# socket = "/tmp/user2.sock"
+# log_filter = "INFO"

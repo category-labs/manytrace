@@ -23,6 +23,7 @@ use std::{
     convert::TryFrom,
     os::fd::{AsFd, AsRawFd, RawFd},
 };
+use tracing::{debug, warn};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfilerConfig {
@@ -36,6 +37,12 @@ pub struct ProfilerConfig {
     pub pid_filters: Vec<i32>,
     #[serde(default)]
     pub filter_process: Vec<String>,
+    #[serde(default = "default_debug_syms")]
+    pub debug_syms: bool,
+    #[serde(default)]
+    pub perf_map: bool,
+    #[serde(default = "default_map_files")]
+    pub map_files: bool,
 }
 
 fn default_sample_freq() -> u64 {
@@ -43,6 +50,14 @@ fn default_sample_freq() -> u64 {
 }
 
 fn default_user_samples() -> bool {
+    true
+}
+
+fn default_debug_syms() -> bool {
+    true
+}
+
+fn default_map_files() -> bool {
     true
 }
 
@@ -135,7 +150,6 @@ where
             .open(open_object)
             .map_err(|e| BpfError::LoadError(format!("failed to open bpf skeleton: {}", e)))?;
 
-        // Set filter_tgid based on whether we have any filters
         let filter_enabled = !config.pid_filters.is_empty() || !config.filter_process.is_empty();
         open_skel
             .maps
@@ -188,6 +202,10 @@ where
         // NOTE find a way to handle it in a safer manner
         let stackmap_fd = skel.maps.stackmap.as_fd().as_raw_fd();
 
+        let debug_syms = config.debug_syms;
+        let perf_map = config.perf_map;
+        let map_files = config.map_files;
+
         let mut builder = RingBufferBuilder::new();
         builder
             .add(&skel.maps.events, move |data: &[u8]| {
@@ -212,7 +230,14 @@ where
                 let rst = hasher.finish();
                 let key = (event.tgid, rst);
                 let callstack_iid = {
-                    let usyms = symbolize_user_stack(symbolizer, &ustack_frames, event.tgid);
+                    let usyms = symbolize_user_stack(
+                        symbolizer,
+                        &ustack_frames,
+                        event.tgid,
+                        debug_syms,
+                        perf_map,
+                        map_files,
+                    );
                     let ksyms = symbolize_kernel_stack(symbolizer, &kstack_frames);
                     if usyms.is_empty() && ksyms.is_empty() {
                         None
@@ -313,23 +338,28 @@ fn symbolize_user_stack<'a>(
     symbolizer: &'a Symbolizer,
     stack_frames: &[u64],
     pid: u32,
+    debug_syms: bool,
+    perf_map: bool,
+    map_files: bool,
 ) -> Vec<blazesym::symbolize::Symbolized<'a>> {
     if stack_frames.is_empty() {
         return vec![];
     }
-
-    symbolizer
-        .symbolize(
-            &Source::Process(Process {
-                pid: Pid::from(pid),
-                debug_syms: true,
-                perf_map: false,
-                map_files: true,
-                _non_exhaustive: (),
-            }),
-            Input::AbsAddr(stack_frames),
-        )
-        .unwrap_or_else(|_| vec![])
+    debug!(pid, map_files, "symbolizing");
+    let rst = symbolizer.symbolize(
+        &Source::Process(Process {
+            pid: Pid::from(pid),
+            debug_syms,
+            perf_map,
+            map_files,
+            _non_exhaustive: (),
+        }),
+        Input::AbsAddr(stack_frames),
+    );
+    if let Err(err) = &rst {
+        warn!(err = %err, pid = %pid, "failed to symbolize")
+    }
+    rst.unwrap_or_default()
 }
 
 fn symbolize_kernel_stack<'a>(
@@ -340,14 +370,17 @@ fn symbolize_kernel_stack<'a>(
         return vec![];
     }
 
-    symbolizer
-        .symbolize(
+    let rst =
+        symbolizer.symbolize(
             &blazesym::symbolize::source::Source::Kernel(
                 blazesym::symbolize::source::Kernel::default(),
             ),
             Input::AbsAddr(stack_frames),
-        )
-        .unwrap_or_else(|_| vec![])
+        );
+    if let Err(err) = &rst {
+        warn!(err = %err, "failed to symbolize kernel")
+    }
+    rst.unwrap_or_default()
 }
 
 fn create_sample(event: &PerfEvent, callstack_iid: u64) -> Sample {
@@ -476,6 +509,9 @@ mod root_tests {
             user_samples: true,
             pid_filters: vec![std::process::id() as i32],
             filter_process: vec![],
+            debug_syms: true,
+            perf_map: false,
+            map_files: true,
         };
 
         let mut object = Object::new(config);

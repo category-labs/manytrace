@@ -5,3 +5,4 @@ perf.data*
 bpf/src/bpf/*.skel.rs
 *.pftrace
 *.perfetto
+Dockerfile
