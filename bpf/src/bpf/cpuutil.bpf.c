@@ -42,11 +42,20 @@ struct {
     __type(value, u32);
 } tracked_tgids SEC(".maps");
 
+const volatile struct {
+    bool filter_enabled;
+} cfg = {
+    .filter_enabled = false,
+};
+
 static __always_inline u64 get_time() {
     return bpf_ktime_get_ns();
 }
 
 static __always_inline bool should_track_tgid(u32 tgid) {
+    if (!cfg.filter_enabled) {
+        return true;
+    }
     if (tgid == 0) {
         return true;
     }

@@ -1,7 +1,7 @@
 use blazesym::symbolize::Symbolizer;
 use protocol::Event;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{cell::RefCell, collections::HashSet, path::Path, rc::Rc};
 use thiserror::Error;
 use tracing::debug;
 
@@ -9,6 +9,10 @@ pub mod cpuutil;
 mod perf_event;
 pub mod profiler;
 pub mod threadtrack;
+
+pub(crate) trait Filterable {
+    fn filter(&mut self, pid: i32) -> Result<(), BpfError>;
+}
 
 pub use cpuutil::CpuUtilConfig;
 pub use profiler::ProfilerConfig;
@@ -32,6 +36,8 @@ pub struct BpfConfig {
     pub cpu_util: Option<CpuUtilConfig>,
     #[serde(default)]
     pub profiler: Option<ProfilerConfig>,
+    #[serde(default)]
+    pub filter_process: Vec<String>,
 }
 
 impl BpfConfig {
@@ -56,6 +62,32 @@ impl BpfConfig {
     }
 
     pub fn build(self) -> Result<BpfObject, BpfError> {
+        let global_filter = if !self.filter_process.is_empty() {
+            Some(self.filter_process.clone())
+        } else {
+            None
+        };
+
+        let needs_process_filtering = {
+            let cpu_needs = self
+                .cpu_util
+                .as_ref()
+                .map(|cfg| !cfg.filter_process.is_empty() || global_filter.is_some())
+                .unwrap_or(false);
+            let profiler_needs = self
+                .profiler
+                .as_ref()
+                .map(|cfg| !cfg.filter_process.is_empty() || global_filter.is_some())
+                .unwrap_or(false);
+            cpu_needs || profiler_needs
+        };
+
+        if needs_process_filtering && self.thread_tracker.is_none() {
+            return Err(BpfError::LoadError(
+                "Thread tracker must be enabled when using process name filtering".to_string(),
+            ));
+        }
+
         let threadtrack = if let Some(_cfg) = self.thread_tracker {
             debug!("initializing thread tracker");
             Some(threadtrack::Object::new())
@@ -63,30 +95,42 @@ impl BpfConfig {
             None
         };
 
-        let cpuutils = if let Some(cfg) = self.cpu_util {
+        let (cpuutils, cpuutil_filters) = if let Some(mut cfg) = self.cpu_util {
+            if let Some(ref global) = global_filter {
+                cfg.filter_process = global.clone();
+            }
+
             debug!(
                 module = "cpuutil",
                 interval_ms = cfg.interval_ms,
                 pid_filters = ?cfg.pid_filters,
+                filter_process = ?cfg.filter_process,
                 "initializing cpu utilization monitor"
             );
-            Some(cpuutil::Object::new(cfg))
+            let filters: HashSet<String> = cfg.filter_process.iter().cloned().collect();
+            (Some(cpuutil::Object::new(cfg)), filters)
         } else {
-            None
+            (None, HashSet::new())
         };
 
-        let profiler = if let Some(cfg) = self.profiler {
+        let (profiler, profiler_filters) = if let Some(mut cfg) = self.profiler {
+            if let Some(ref global) = global_filter {
+                cfg.filter_process = global.clone();
+            }
+
             debug!(
                 module = "profiler",
                 sample_freq = cfg.sample_freq,
                 kernel_samples = cfg.kernel_samples,
                 user_samples = cfg.user_samples,
                 pid_filters = ?cfg.pid_filters,
+                filter_process = ?cfg.filter_process,
                 "initializing profiler"
             );
-            Some(profiler::Object::new(cfg))
+            let filters: HashSet<String> = cfg.filter_process.iter().cloned().collect();
+            (Some(profiler::Object::new(cfg)), filters)
         } else {
-            None
+            (None, HashSet::new())
         };
 
         Ok(BpfObject {
@@ -94,6 +138,8 @@ impl BpfConfig {
             threadtrack,
             cpuutils,
             profiler,
+            cpuutil_filters,
+            profiler_filters,
         })
     }
 }
@@ -103,61 +149,112 @@ pub struct BpfObject {
     threadtrack: Option<threadtrack::Object>,
     cpuutils: Option<cpuutil::Object>,
     profiler: Option<profiler::Object>,
+    cpuutil_filters: HashSet<String>,
+    profiler_filters: HashSet<String>,
 }
 
 impl BpfObject {
-    pub fn consumer<'this, F>(
-        &'this mut self,
-        callback: F,
-    ) -> Result<BpfConsumer<'this, F>, BpfError>
+    pub fn consumer<'this, F>(&'this mut self, callback: F) -> Result<BpfConsumer<'this>, BpfError>
     where
         F: for<'a> FnMut(Event<'a>) + Clone + 'this,
     {
-        let threadtrack = if let Some(ref mut obj) = self.threadtrack {
-            Some(obj.build(callback.clone())?)
-        } else {
-            None
-        };
-
         let cpuutil = if let Some(ref mut obj) = self.cpuutils {
-            Some(obj.build(callback.clone())?)
+            Some(obj.build(Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Event<'a>)>)?)
         } else {
             None
         };
 
         let profiler = if let Some(ref mut obj) = self.profiler {
-            Some(obj.build(callback.clone(), &self.symbolizer)?)
+            let callback = Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Event<'a>)>;
+            Some(obj.build(callback, &self.symbolizer)?)
+        } else {
+            None
+        };
+
+        let cpuutil_rc = cpuutil.map(|c| Rc::new(RefCell::new(c)));
+        let profiler_rc = profiler.map(|p| Rc::new(RefCell::new(p)));
+
+        let threadtrack = if let Some(ref mut obj) = self.threadtrack {
+            let has_cpuutil = cpuutil_rc.is_some();
+            let has_profiler = profiler_rc.is_some();
+
+            if has_cpuutil || has_profiler {
+                let mut user_callback = callback.clone();
+                let cpuutil_filters = self.cpuutil_filters.clone();
+                let profiler_filters = self.profiler_filters.clone();
+                let cpuutil_ref = cpuutil_rc.clone();
+                let profiler_ref = profiler_rc.clone();
+
+                let wrapper_callback = move |event: Event<'_>| {
+                    if let Event::ProcessName(ref pn) = event {
+                        let pid = pn.pid;
+                        let name = pn.name;
+
+                        if let Some(ref cpu) = cpuutil_ref {
+                            if cpuutil_filters.contains(name) {
+                                if let Err(e) = cpu.borrow_mut().filter(pid) {
+                                    tracing::warn!(
+                                        "Failed to add process {} (pid {}) to cpuutil filter: {}",
+                                        name,
+                                        pid,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        if let Some(ref cpu) = profiler_ref {
+                            if profiler_filters.contains(name) {
+                                if let Err(e) = cpu.borrow_mut().filter(pid) {
+                                    tracing::warn!(
+                                        "Failed to add process {} (pid {}) to profiler filter: {}",
+                                        name,
+                                        pid,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    user_callback(event);
+                };
+
+                let callback = Box::new(wrapper_callback) as Box<dyn for<'a> FnMut(Event<'a>)>;
+                Some(obj.build(callback)?)
+            } else {
+                let callback = Box::new(callback) as Box<dyn for<'a> FnMut(Event<'a>)>;
+                Some(obj.build(callback)?)
+            }
         } else {
             None
         };
 
         Ok(BpfConsumer {
             threadtrack,
-            cpuutil,
-            profiler,
+            cpuutil: cpuutil_rc,
+            profiler: profiler_rc,
         })
     }
 }
 
-pub struct BpfConsumer<'this, F> {
-    threadtrack: Option<threadtrack::ThreadTracker<'this, F>>,
-    cpuutil: Option<cpuutil::CpuUtil<'this, F>>,
-    profiler: Option<profiler::Profiler<'this, F>>,
+type Callback<'cb> = Box<dyn for<'a> FnMut(Event<'a>) + 'cb>;
+
+pub struct BpfConsumer<'this> {
+    threadtrack: Option<threadtrack::ThreadTracker<'this, Callback<'this>>>,
+    cpuutil: Option<Rc<RefCell<cpuutil::CpuUtil<'this, Callback<'this>>>>>,
+    profiler: Option<Rc<RefCell<profiler::Profiler<'this, Callback<'this>>>>>,
 }
 
-impl<'this, F> BpfConsumer<'this, F>
-where
-    F: for<'a> FnMut(Event<'a>) + 'this,
-{
+impl<'this> BpfConsumer<'this> {
     pub fn consume(&mut self) -> Result<(), BpfError> {
         if let Some(ref mut tracker) = self.threadtrack {
             tracker.consume()?;
         }
-        if let Some(ref mut util) = self.cpuutil {
-            util.consume()?;
+        if let Some(ref util) = self.cpuutil {
+            util.borrow_mut().consume()?;
         }
-        if let Some(ref mut prof) = self.profiler {
-            prof.consume()?;
+        if let Some(ref prof) = self.profiler {
+            prof.borrow_mut().consume()?;
         }
         Ok(())
     }
@@ -166,11 +263,11 @@ where
         if let Some(ref mut tracker) = self.threadtrack {
             tracker.poll(timeout)?;
         }
-        if let Some(ref mut util) = self.cpuutil {
-            util.poll(timeout)?;
+        if let Some(ref util) = self.cpuutil {
+            util.borrow_mut().poll(timeout)?;
         }
-        if let Some(ref mut prof) = self.profiler {
-            prof.poll(timeout)?;
+        if let Some(ref prof) = self.profiler {
+            prof.borrow_mut().poll(timeout)?;
         }
         Ok(())
     }
@@ -222,5 +319,51 @@ cpu_util = {}
         let config = BpfConfig::from_toml_str(config_str).unwrap();
         assert!(config.thread_tracker.is_none());
         assert!(config.cpu_util.is_none());
+    }
+
+    #[test]
+    fn test_process_filtering_config() {
+        let config_str = r#"
+filter_process = ["global_filter"]
+
+[thread_tracker]
+
+[cpu_util]
+filter_process = ["chrome", "firefox"]
+
+[profiler]
+filter_process = ["node"]
+"#;
+
+        let config = BpfConfig::from_toml_str(config_str).unwrap();
+        assert!(config.thread_tracker.is_some());
+        assert!(config.cpu_util.is_some());
+        assert!(config.profiler.is_some());
+
+        // Test global filter
+        assert_eq!(config.filter_process, vec!["global_filter"]);
+
+        // Test individual filters before build
+        let cpu_config = config.cpu_util.as_ref().unwrap();
+        assert_eq!(cpu_config.filter_process, vec!["chrome", "firefox"]);
+
+        let profiler_config = config.profiler.as_ref().unwrap();
+        assert_eq!(profiler_config.filter_process, vec!["node"]);
+    }
+
+    #[test]
+    fn test_process_filtering_requires_threadtrack() {
+        let config_str = r#"
+[cpu_util]
+filter_process = ["test"]
+"#;
+
+        let config = BpfConfig::from_toml_str(config_str).unwrap();
+        let result = config.build();
+
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("Thread tracker must be enabled"));
+        }
     }
 }

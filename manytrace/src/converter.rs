@@ -33,9 +33,9 @@ impl<W: Write> PerfettoConverter<W> {
             return Ok(track_uuid);
         }
 
-        let track_uuid = self.writer.write_process_descriptor(
-            pid as u32, name.map(|name| name.to_string()),
-        )?;
+        let track_uuid = self
+            .writer
+            .write_process_descriptor(pid as u32, name.map(|name| name.to_string()))?;
 
         self.process_tracks.insert(pid, track_uuid);
         Ok(track_uuid)

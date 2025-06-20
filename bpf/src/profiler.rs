@@ -1,4 +1,4 @@
-use crate::{perf_event, BpfError};
+use crate::{perf_event, BpfError, Filterable};
 use blazesym::{
     symbolize::{
         source::{Process, Source},
@@ -34,6 +34,8 @@ pub struct ProfilerConfig {
     pub user_samples: bool,
     #[serde(default)]
     pub pid_filters: Vec<i32>,
+    #[serde(default)]
+    pub filter_process: Vec<String>,
 }
 
 fn default_sample_freq() -> u64 {
@@ -133,6 +135,8 @@ where
             .open(open_object)
             .map_err(|e| BpfError::LoadError(format!("failed to open bpf skeleton: {}", e)))?;
 
+        // Set filter_tgid based on whether we have any filters
+        let filter_enabled = !config.pid_filters.is_empty() || !config.filter_process.is_empty();
         open_skel
             .maps
             .rodata_data
@@ -140,7 +144,7 @@ where
             .unwrap()
             .cfg
             .filter_tgid
-            .write(!config.pid_filters.is_empty());
+            .write(filter_enabled);
         open_skel
             .maps
             .rodata_data
@@ -268,6 +272,22 @@ where
             Ok(_) => Ok(()),
             Err(e) => Err(BpfError::MapError(format!("failed to poll events: {}", e))),
         }
+    }
+}
+
+impl<'obj, F> Filterable for Profiler<'obj, F>
+where
+    F: for<'a> FnMut(Event<'a>) + 'obj,
+{
+    fn filter(&mut self, pid: i32) -> Result<(), BpfError> {
+        let key = pid.to_ne_bytes();
+        let value = 1u8.to_ne_bytes();
+        self._skel
+            .maps
+            .filter_tgid
+            .update(&key, &value, libbpf_rs::MapFlags::ANY)
+            .map_err(|e| BpfError::MapError(format!("failed to update filter map: {}", e)))?;
+        Ok(())
     }
 }
 
@@ -457,6 +477,7 @@ mod root_tests {
             kernel_samples: true,
             user_samples: true,
             pid_filters: vec![std::process::id() as i32],
+            filter_process: vec![],
         };
 
         let mut object = Object::new(config);

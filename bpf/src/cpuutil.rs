@@ -4,7 +4,7 @@ mod cpuutil_skel {
 
 use cpuutil_skel::*;
 
-use crate::{perf_event, BpfError};
+use crate::{perf_event, BpfError, Filterable};
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::{MapCore, MapFlags, OpenObject, RingBufferBuilder};
 use libbpf_sys::{PERF_COUNT_SW_CPU_CLOCK, PERF_TYPE_SOFTWARE};
@@ -24,6 +24,8 @@ pub struct CpuUtilConfig {
     pub interval_ms: u64,
     #[serde(default)]
     pub pid_filters: Vec<u32>,
+    #[serde(default)]
+    pub filter_process: Vec<String>,
 }
 
 impl Default for CpuUtilConfig {
@@ -31,6 +33,7 @@ impl Default for CpuUtilConfig {
         Self {
             interval_ms: default_interval_ms(),
             pid_filters: Vec::new(),
+            filter_process: Vec::new(),
         }
     }
 }
@@ -118,9 +121,20 @@ where
     ) -> Result<Self, BpfError> {
         let skel_builder = CpuutilSkelBuilder::default();
 
-        let open_skel = skel_builder
+        let mut open_skel = skel_builder
             .open(open_object)
             .map_err(|e| BpfError::LoadError(format!("failed to open bpf skeleton: {}", e)))?;
+
+        // Set filter_enabled based on whether we have any filters
+        let filter_enabled = !config.pid_filters.is_empty() || !config.filter_process.is_empty();
+        open_skel
+            .maps
+            .rodata_data
+            .as_mut()
+            .unwrap()
+            .cfg
+            .filter_enabled
+            .write(filter_enabled);
 
         let mut skel = open_skel
             .load()
@@ -206,28 +220,6 @@ where
         })
     }
 
-    pub fn track_tgid(&mut self, tgid: u32) -> Result<(), BpfError> {
-        let one: u32 = 1;
-        let tgid_bytes = tgid.to_ne_bytes();
-        let one_bytes = one.to_ne_bytes();
-        self.skel
-            .maps
-            .tracked_tgids
-            .update(&tgid_bytes, &one_bytes, MapFlags::ANY)
-            .map_err(|e| BpfError::MapError(format!("failed to track tgid {}: {}", tgid, e)))?;
-        Ok(())
-    }
-
-    pub fn untrack_tgid(&mut self, tgid: u32) -> Result<(), BpfError> {
-        let tgid_bytes = tgid.to_ne_bytes();
-        self.skel
-            .maps
-            .tracked_tgids
-            .delete(&tgid_bytes)
-            .map_err(|e| BpfError::MapError(format!("failed to untrack tgid {}: {}", tgid, e)))?;
-        Ok(())
-    }
-
     pub fn poll(&mut self, timeout: Duration) -> Result<(), BpfError> {
         self.ringbuf
             .poll(timeout)
@@ -304,6 +296,15 @@ where
     }
 }
 
+impl<'this, F> Filterable for CpuUtil<'this, F>
+where
+    F: for<'a> FnMut(Event<'a>) + 'this,
+{
+    fn filter(&mut self, pid: i32) -> Result<(), BpfError> {
+        self.add_pid_filter(pid as u32)
+    }
+}
+
 #[cfg(test)]
 mod root_tests {
     use super::*;
@@ -352,6 +353,7 @@ mod root_tests {
         let config = CpuUtilConfig {
             interval_ms: 100,
             pid_filters: vec![cpuutil_setup.current_pid],
+            filter_process: vec![],
         };
 
         let mut object = Object::new(config);
@@ -416,6 +418,7 @@ mod root_tests {
         let config = CpuUtilConfig {
             interval_ms: 100,
             pid_filters: vec![cpuutil_setup.current_pid],
+            filter_process: vec![],
         };
 
         let mut object = Object::new(config);

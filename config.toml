@@ -4,16 +4,10 @@ buffer_size = 2097152
 sample_freq = 999
 kernel_samples = true
 user_samples = true
-pid_filters = [30953, 30969]
+filter_process = ["continuous"]
 
 [bpf.thread_tracker]
 
 [bpf.cpu_util]
 interval_ms = 100
-pid_filters = [30953, 30969]
-
-[[user]]
-socket = "/tmp/user1.sock"
-
-[[user]]
-socket = "/tmp/user2.sock"
+filter_process = ["continuous"]

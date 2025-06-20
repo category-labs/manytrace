@@ -1,6 +1,8 @@
 use agent::{AgentClient, Consumer};
 use clap::Parser;
 use eyre::{Context, Result};
+use manytrace::config::Config;
+use manytrace::converter::PerfettoConverter;
 use protocol::{Event, LogLevel};
 use std::cell::RefCell;
 use std::fs::File;
@@ -10,8 +12,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-use manytrace::config::Config;
-use manytrace::converter::PerfettoConverter;
 
 #[derive(Parser)]
 #[command(name = "manytrace")]
@@ -97,17 +97,11 @@ fn main() -> Result<()> {
         }
     }
 
-    if user_clients.is_empty() {
-        return Err(eyre::eyre!("no data sources configured"));
-    }
-
     let start_time = Instant::now();
     let duration = args.duration;
     let mut last_keepalive = Instant::now();
 
     while running.load(Ordering::SeqCst) && duration.is_none_or(|d| start_time.elapsed() < d) {
-        
-
         if last_keepalive.elapsed() >= Duration::from_secs(1) {
             for client in &mut user_clients {
                 if let Err(e) = client.send_continue() {
