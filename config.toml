@@ -1,7 +1,7 @@
 buffer_size = 2097152
 
 [bpf.profiler]
-sample_freq = 999
+sample_freq = 99
 kernel_samples = true
 user_samples = true
 filter_process = ["continuous"]
@@ -11,3 +11,9 @@ filter_process = ["continuous"]
 [bpf.cpu_util]
 frequency = 10
 filter_process = ["continuous", "manytrace"]
+
+[[user]]
+socket = "/tmp/user1.sock"
+
+[[user]]
+socket = "/tmp/user2.sock"

@@ -169,8 +169,7 @@ where
                     if boundaries_reported == nprocs {
                         boundaries_reported = 0;
                         for ((pid, tid), thread_stats) in thread_stats.iter_mut() {
-                            let elapsed_ns =
-                                (max_timestamp - thread_stats.min_timestamp) as f64;
+                            let elapsed_ns = (max_timestamp - thread_stats.min_timestamp) as f64;
                             let cpu_percent =
                                 (thread_stats.cpu_time_ns as f64 / elapsed_ns) * 100.0;
                             debug!(

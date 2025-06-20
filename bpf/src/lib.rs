@@ -283,7 +283,7 @@ mod tests {
 [thread_tracker]
 
 [cpu_util]
-interval_ms = 2000
+frequency = 2000
 pid_filters = [1234, 5678]
 "#;
 
@@ -308,7 +308,7 @@ cpu_util = {}
         assert!(config.cpu_util.is_some());
 
         let cpu_config = config.cpu_util.as_ref().unwrap();
-        assert_eq!(cpu_config.frequency, 1000);
+        assert_eq!(cpu_config.frequency, 9);
         assert!(cpu_config.pid_filters.is_empty());
     }
 

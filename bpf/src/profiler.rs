@@ -211,9 +211,7 @@ where
                 kstack_frames.hash(&mut hasher);
                 let rst = hasher.finish();
                 let key = (event.tgid, rst);
-                let callstack_iid = if let Some(&iid) = callstacks.mapping.get(&key) {
-                    Some(iid)
-                } else {
+                let callstack_iid = {
                     let usyms = symbolize_user_stack(symbolizer, &ustack_frames, event.tgid);
                     let ksyms = symbolize_kernel_stack(symbolizer, &kstack_frames);
                     if usyms.is_empty() && ksyms.is_empty() {
