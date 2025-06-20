@@ -59,6 +59,8 @@ pub enum AgentError {
     Archive(#[from] rkyv::rancor::Error),
     #[error("Agent not enabled")]
     NotEnabled,
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type Result<T> = std::result::Result<T, AgentError>;

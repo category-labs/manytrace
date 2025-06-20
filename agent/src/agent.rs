@@ -1,9 +1,10 @@
 use arc_swap::ArcSwapOption;
-use protocol::Event;
+use protocol::{Args, Event, TimestampType};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use thread_local::ThreadLocal;
+use tracing_subscriber::EnvFilter;
 
 use crate::epoll_thread::epoll_listener_thread;
 use crate::{Producer, Result};
@@ -12,20 +13,45 @@ use crate::{Producer, Result};
 pub(crate) struct ProducerState {
     producer: Arc<Producer>,
     clock_id: libc::clockid_t,
+    env_filter: Option<EnvFilter>,
     thread_names_sent: Arc<ThreadLocal<std::cell::Cell<bool>>>,
 }
 
 impl ProducerState {
-    pub(crate) fn new(producer: Arc<Producer>, clock_id: libc::clockid_t) -> Self {
+    pub(crate) fn new(producer: Arc<Producer>, args: Option<Args>) -> Self {
+        let (clock_id, env_filter) = match &args {
+            Some(Args::Tracing(tracing_args)) => {
+                let clock_id = match tracing_args.timestamp_type {
+                    TimestampType::Monotonic => libc::CLOCK_MONOTONIC,
+                    TimestampType::Boottime => libc::CLOCK_BOOTTIME,
+                    TimestampType::Realtime => libc::CLOCK_REALTIME,
+                };
+                // filter has already been validated in agent_state.rs
+                let filter = EnvFilter::try_new(&tracing_args.log_filter).unwrap();
+                tracing::debug!(
+                    "computed clock_id: {}, log_filter: {}",
+                    clock_id,
+                    tracing_args.log_filter
+                );
+                (clock_id, Some(filter))
+            }
+            None => (libc::CLOCK_MONOTONIC, None),
+        };
+
         Self {
             producer,
             clock_id,
+            env_filter,
             thread_names_sent: Arc::new(ThreadLocal::new()),
         }
     }
 
     pub(crate) fn clock_id(&self) -> libc::clockid_t {
         self.clock_id
+    }
+
+    pub(crate) fn env_filter(&self) -> Option<&EnvFilter> {
+        self.env_filter.as_ref()
     }
 
     pub(crate) fn submit_with_thread_name(&self, event: &Event) -> Result<()> {
@@ -119,6 +145,15 @@ impl Agent {
             .unwrap_or(libc::CLOCK_MONOTONIC)
     }
 
+    /// Get the current environment filter if a client is connected.
+    pub fn env_filter<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&EnvFilter) -> R,
+    {
+        let guard = self.producer_state.load();
+        guard.as_ref().and_then(|s| s.env_filter()).map(f)
+    }
+
     /// Gracefully shut down the agent and wait for thread termination.
     pub fn wait_terminated(&mut self) -> Result<()> {
         self.shutdown.store(true, Ordering::Relaxed);
@@ -142,7 +177,7 @@ impl Drop for Agent {
 mod tests {
     use super::*;
     use crate::{AgentClient, Consumer};
-    use protocol::{Counter, Event, Labels, LogLevel};
+    use protocol::{Counter, Event, Labels};
     use rstest::*;
     use std::borrow::Cow;
     use std::sync::Once;
@@ -213,7 +248,7 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
-        client.start(&consumer, LogLevel::Debug).unwrap();
+        client.start(&consumer, "debug".to_string()).unwrap();
         assert!(client.enabled());
     }
 
@@ -225,11 +260,11 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client1 = AgentClient::new(temp_socket_path.clone());
-        client1.start(&consumer, LogLevel::Debug).unwrap();
+        client1.start(&consumer, "debug".to_string()).unwrap();
         assert!(client1.enabled());
 
         let mut client2 = AgentClient::new(temp_socket_path);
-        let result = client2.start(&consumer, LogLevel::Debug);
+        let result = client2.start(&consumer, "debug".to_string());
         assert!(result.is_err());
         assert!(!client2.enabled());
     }
@@ -242,7 +277,7 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
-        client.start(&consumer, LogLevel::Debug).unwrap();
+        client.start(&consumer, "debug".to_string()).unwrap();
         assert!(client.enabled());
 
         client.send_continue().unwrap();
@@ -258,7 +293,7 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
-        client.start(&consumer, LogLevel::Debug).unwrap();
+        client.start(&consumer, "debug".to_string()).unwrap();
 
         thread::sleep(Duration::from_millis(10));
 
@@ -284,7 +319,7 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
-        client.start(&consumer, LogLevel::Debug).unwrap();
+        client.start(&consumer, "debug".to_string()).unwrap();
 
         thread::sleep(Duration::from_millis(10));
 
@@ -314,7 +349,7 @@ mod tests {
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path.clone());
-        client.start(&consumer, LogLevel::Debug).unwrap();
+        client.start(&consumer, "debug".to_string()).unwrap();
 
         thread::sleep(Duration::from_millis(10));
 

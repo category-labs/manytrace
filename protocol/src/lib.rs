@@ -201,11 +201,23 @@ pub enum TimestampType {
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[rkyv(compare(PartialEq))]
+pub struct TracingArgs {
+    pub log_filter: String,
+    pub timestamp_type: TimestampType,
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[rkyv(compare(PartialEq))]
+pub enum Args {
+    Tracing(TracingArgs),
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[rkyv(compare(PartialEq))]
 pub enum ControlMessage<'a> {
     Start {
         buffer_size: u64,
-        log_level: LogLevel,
-        timestamp_type: TimestampType,
+        args: Args,
     },
     Stop,
     Continue,
@@ -658,8 +670,10 @@ mod tests {
         let messages = [
             ControlMessage::Start {
                 buffer_size: 1024,
-                log_level: LogLevel::Info,
-                timestamp_type: TimestampType::Monotonic,
+                args: Args::Tracing(TracingArgs {
+                    log_filter: "info".to_string(),
+                    timestamp_type: TimestampType::Monotonic,
+                }),
             },
             ControlMessage::Stop,
             ControlMessage::Continue,
@@ -677,20 +691,26 @@ mod tests {
 
             match (&msg, archived) {
                 (
-                    ControlMessage::Start {
-                        buffer_size,
-                        log_level,
-                        timestamp_type,
-                    },
+                    ControlMessage::Start { buffer_size, args },
                     ArchivedControlMessage::Start {
                         buffer_size: arch_size,
-                        log_level: arch_level,
-                        timestamp_type: arch_timestamp_type,
+                        args: arch_args,
                     },
                 ) => {
                     assert_eq!(*buffer_size, arch_size.to_native());
-                    assert_eq!(*log_level, *arch_level);
-                    assert_eq!(*timestamp_type, *arch_timestamp_type);
+                    match (args, arch_args) {
+                        (Args::Tracing(tracing_args), ArchivedArgs::Tracing(arch_tracing_args)) => {
+                            assert_eq!(
+                                &tracing_args.log_filter,
+                                std::str::from_utf8(arch_tracing_args.log_filter.as_bytes())
+                                    .unwrap()
+                            );
+                            assert_eq!(
+                                tracing_args.timestamp_type,
+                                arch_tracing_args.timestamp_type
+                            );
+                        }
+                    }
                 }
                 (ControlMessage::Stop, ArchivedControlMessage::Stop) => {}
                 (ControlMessage::Continue, ArchivedControlMessage::Continue) => {}

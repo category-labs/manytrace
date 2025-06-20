@@ -1,5 +1,4 @@
 use divan::Bencher;
-use protocol::LogLevel;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tracing::info;
@@ -28,7 +27,7 @@ fn setup_tracing() -> BenchSetup {
     let mut client = agent::AgentClient::new(socket_path_str);
 
     for i in 0..10 {
-        match client.start(&consumer, LogLevel::Debug) {
+        match client.start(&consumer, "debug".to_string()) {
             Ok(_) => break,
             Err(_) => {
                 if i == 9 {

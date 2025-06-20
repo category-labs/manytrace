@@ -11,14 +11,6 @@ use tracing::{debug, warn};
 use crate::agent::ProducerState;
 use crate::{AgentError, Producer, Result};
 
-fn timestamp_type_to_clock_id(timestamp_type: TimestampType) -> libc::clockid_t {
-    match timestamp_type {
-        TimestampType::Monotonic => libc::CLOCK_MONOTONIC,
-        TimestampType::Boottime => libc::CLOCK_BOOTTIME,
-        TimestampType::Realtime => libc::CLOCK_REALTIME,
-    }
-}
-
 pub(crate) struct AgentContext {
     pub(crate) another_started: bool,
 }
@@ -167,11 +159,7 @@ fn handle_start_message(
         rkyv::access::<protocol::ArchivedControlMessage, rkyv::rancor::Error>(received_data)?;
 
     match archived_msg {
-        protocol::ArchivedControlMessage::Start {
-            buffer_size,
-            timestamp_type,
-            ..
-        } => {
+        protocol::ArchivedControlMessage::Start { buffer_size, args } => {
             if ctx.another_started {
                 let error_msg = "another client already started".to_string();
                 let nack_msg = ControlMessage::Nack { error: &error_msg };
@@ -181,12 +169,31 @@ fn handle_start_message(
             }
 
             let buffer_size = buffer_size.to_native() as usize;
-            let timestamp_type_native = match *timestamp_type {
-                protocol::ArchivedTimestampType::Monotonic => TimestampType::Monotonic,
-                protocol::ArchivedTimestampType::Boottime => TimestampType::Boottime,
-                protocol::ArchivedTimestampType::Realtime => TimestampType::Realtime,
+
+            let deserialized_args = match args {
+                protocol::ArchivedArgs::Tracing(tracing_args) => {
+                    let timestamp_type_native = match tracing_args.timestamp_type {
+                        protocol::ArchivedTimestampType::Monotonic => TimestampType::Monotonic,
+                        protocol::ArchivedTimestampType::Boottime => TimestampType::Boottime,
+                        protocol::ArchivedTimestampType::Realtime => TimestampType::Realtime,
+                    };
+                    let log_filter = tracing_args.log_filter.as_str().to_string();
+
+                    // Validate the log filter before proceeding
+                    if let Err(e) = tracing_subscriber::EnvFilter::try_new(&log_filter) {
+                        let error_msg = format!("Invalid log filter '{}': {}", log_filter, e);
+                        let nack_msg = ControlMessage::Nack { error: &error_msg };
+                        send_message(stream, &nack_msg)?;
+                        debug!("sent nack - {}", error_msg);
+                        return Ok(None);
+                    }
+
+                    Some(protocol::Args::Tracing(protocol::TracingArgs {
+                        log_filter,
+                        timestamp_type: timestamp_type_native,
+                    }))
+                }
             };
-            let clock_id = timestamp_type_to_clock_id(timestamp_type_native);
 
             let mut memory_fd: Option<OwnedFd> = None;
             let mut notification_fd: Option<OwnedFd> = None;
@@ -239,7 +246,7 @@ fn handle_start_message(
                 }
             }
 
-            let producer_state = Arc::new(ProducerState::new(producer, clock_id));
+            let producer_state = Arc::new(ProducerState::new(producer, deserialized_args));
 
             debug!(buffer_size, client_id, "producer initialized");
 
@@ -487,7 +494,7 @@ mod tests {
     use super::*;
     use crate::Consumer;
     use arc_swap::ArcSwapOption;
-    use protocol::{ControlMessage, LogLevel};
+    use protocol::ControlMessage;
     use rstest::{fixture, rstest};
     use std::os::unix::net::{UnixListener, UnixStream};
     use tempfile::TempDir;
@@ -519,11 +526,13 @@ mod tests {
         }
     }
 
-    fn send_start_message(stream: &UnixStream, buffer_size: u64, log_level: LogLevel) {
+    fn send_start_message(stream: &UnixStream, buffer_size: u64, log_filter: &str) {
         let start_msg = ControlMessage::Start {
             buffer_size,
-            log_level,
-            timestamp_type: protocol::TimestampType::Monotonic,
+            args: protocol::Args::Tracing(protocol::TracingArgs {
+                log_filter: log_filter.to_string(),
+                timestamp_type: protocol::TimestampType::Monotonic,
+            }),
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();
@@ -552,8 +561,10 @@ mod tests {
     ) {
         let start_msg = ControlMessage::Start {
             buffer_size: consumer.data_size() as u64,
-            log_level: LogLevel::Debug,
-            timestamp_type,
+            args: protocol::Args::Tracing(protocol::TracingArgs {
+                log_filter: "debug".to_string(),
+                timestamp_type,
+            }),
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();
@@ -638,7 +649,7 @@ mod tests {
             another_started: false,
         };
 
-        send_start_message(&client, 1024, LogLevel::Debug);
+        send_start_message(&client, 1024, "debug");
         std::thread::sleep(std::time::Duration::from_millis(10));
 
         let result = client_state.handle_message(&mut ctx);

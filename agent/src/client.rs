@@ -1,7 +1,7 @@
 use crate::Consumer;
 use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags, EpollTimeout};
 use nix::sys::socket::{recv, sendmsg, ControlMessage, MsgFlags};
-use protocol::{ControlMessage as ProtocolControlMessage, LogLevel, TimestampType};
+use protocol::{Args, ControlMessage as ProtocolControlMessage, TimestampType, TracingArgs};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use tracing::debug;
@@ -72,15 +72,15 @@ impl AgentClient {
     }
 
     /// Connect to the agent and share the consumer's memory.
-    pub fn start(&mut self, consumer: &Consumer, log_level: LogLevel) -> Result<()> {
-        self.start_with_timestamp(consumer, log_level, TimestampType::Monotonic)
+    pub fn start(&mut self, consumer: &Consumer, log_filter: String) -> Result<()> {
+        self.start_with_timestamp(consumer, log_filter, TimestampType::Monotonic)
     }
 
     /// Connect to the agent and share the consumer's memory with custom timestamp type.
     pub fn start_with_timestamp(
         &mut self,
         consumer: &Consumer,
-        log_level: LogLevel,
+        log_filter: String,
         timestamp_type: TimestampType,
     ) -> Result<()> {
         let stream = UnixStream::connect(&self.socket_path)?;
@@ -89,8 +89,10 @@ impl AgentClient {
 
         let start_msg = ProtocolControlMessage::Start {
             buffer_size: consumer.data_size() as u64,
-            log_level,
-            timestamp_type,
+            args: Args::Tracing(TracingArgs {
+                log_filter,
+                timestamp_type,
+            }),
         };
 
         let serialized_len = protocol::compute_length(&start_msg)?;

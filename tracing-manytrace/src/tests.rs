@@ -1,5 +1,4 @@
 use agent::{Agent, AgentClient, Consumer};
-use protocol::LogLevel;
 use rstest::{fixture, rstest};
 use std::sync::Arc;
 use std::thread::sleep;
@@ -29,7 +28,7 @@ fn setup() -> TestSetup {
     let mut client = AgentClient::new(socket_path_str);
 
     for i in 0..10 {
-        match client.start(&consumer, LogLevel::Debug) {
+        match client.start(&consumer, "debug".to_string()) {
             Ok(_) => break,
             Err(_) => {
                 if i == 9 {

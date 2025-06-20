@@ -17,3 +17,4 @@ socket = "/tmp/user1.sock"
 
 [[user]]
 socket = "/tmp/user2.sock"
+log_filter = "INFO"

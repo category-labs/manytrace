@@ -3,7 +3,7 @@ use clap::Parser;
 use eyre::{Context, Result};
 use manytrace::config::Config;
 use manytrace::converter::PerfettoConverter;
-use protocol::{Event, LogLevel};
+use protocol::Event;
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::BufWriter;
@@ -79,7 +79,7 @@ fn main() -> Result<()> {
     if let Some(ref consumer) = user_consumer {
         for user_config in &config.user {
             let mut client = AgentClient::new(user_config.socket.clone());
-            match client.start(consumer, LogLevel::Debug) {
+            match client.start(consumer, user_config.log_filter.clone()) {
                 Ok(_) => {
                     tracing::info!(socket = %user_config.socket, "connected to user agent");
                     user_clients.push(client);

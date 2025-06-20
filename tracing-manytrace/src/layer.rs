@@ -48,6 +48,15 @@ impl ManytraceLayer {
     fn get_process_id(&self) -> i32 {
         self.process_id
     }
+
+    fn is_enabled<S>(&self, metadata: &tracing::Metadata<'_>, ctx: Context<'_, S>) -> bool
+    where
+        S: Subscriber,
+    {
+        self.agent
+            .env_filter(|filter| filter.enabled(metadata, ctx))
+            .unwrap_or(true)
+    }
 }
 
 impl<S> Layer<S> for ManytraceLayer
@@ -58,6 +67,11 @@ where
         if !self.agent.enabled() {
             return;
         }
+
+        if !self.is_enabled(attrs.metadata(), ctx.clone()) {
+            return;
+        }
+
         let labels = Labels::new();
         let mut span_data = SpanData {
             labels,
@@ -70,6 +84,10 @@ where
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
+        if !self.agent.enabled() {
+            return;
+        }
+
         if let Some(span) = ctx.span(id) {
             if let Some(span_data) = span.extensions_mut().get_mut::<SpanData>() {
                 span_data.start_timestamp = get_timestamp(self.agent.clock_id());
@@ -78,6 +96,10 @@ where
     }
 
     fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
+        if !self.agent.enabled() {
+            return;
+        }
+
         if let Some(span) = ctx.span(id) {
             if let Some(span_data) = span.extensions().get::<SpanData>() {
                 let metadata = span.metadata();
@@ -96,8 +118,12 @@ where
         }
     }
 
-    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+    fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
         if !self.agent.enabled() {
+            return;
+        }
+
+        if !self.is_enabled(event.metadata(), ctx.clone()) {
             return;
         }
 

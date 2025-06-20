@@ -22,6 +22,12 @@ pub struct GlobalConfig {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserConfig {
     pub socket: String,
+    #[serde(default = "default_log_filter")]
+    pub log_filter: String,
+}
+
+fn default_log_filter() -> String {
+    "DEBUG".to_string()
 }
 
 fn default_buffer_size() -> usize {
