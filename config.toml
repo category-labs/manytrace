@@ -1,14 +1,14 @@
-buffer_size = 2097152
+# buffer_size = 2097152
 
 [bpf.profiler]
-sample_freq = 99
-kernel_samples = true
-user_samples = true
-filter_process = ["continuous"]
+sample_freq = 999
+# kernel_samples = true
+# user_samples = true
+filter_process = ["continuous", "manytrace"]
 # Symbolization options (all default to true)
 # debug_syms = true     # Enable debug symbol resolution
 # perf_map = false      # Enable perf map support
-map_files = true
+# map_files = true
 
 [bpf.thread_tracker]
 

@@ -13,7 +13,6 @@ use libbpf_rs::{
 };
 use protocol::{Callstack, CpuMode, Event, Frame, InternedData, InternedString, Sample};
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
@@ -115,7 +114,7 @@ impl Object {
 }
 
 struct Callstacks {
-    mapping: HashMap<(u32, u64), u64>,
+    mapping: HashMap<(i32, u64), u64>,
     sequence: u64,
 }
 
@@ -125,6 +124,29 @@ impl Callstacks {
             mapping: HashMap::new(),
             sequence: 0,
         }
+    }
+
+    fn compute_hash(pid: i32, ustack: &[u64], kstack: &[u64]) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        pid.hash(&mut hasher);
+        ustack.hash(&mut hasher);
+        kstack.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn get(&self, pid: i32, ustack: &[u64], kstack: &[u64]) -> Option<u64> {
+        let hash = Self::compute_hash(pid, ustack, kstack);
+        let key = (pid, hash);
+        self.mapping.get(&key).copied()
+    }
+
+    fn insert(&mut self, pid: i32, ustack: &[u64], kstack: &[u64]) -> u64 {
+        let hash = Self::compute_hash(pid, ustack, kstack);
+        let key = (pid, hash);
+        let id = self.sequence;
+        self.mapping.insert(key, id);
+        self.sequence += 1;
+        id
     }
 }
 
@@ -224,12 +246,13 @@ where
                 if ustack_frames.is_empty() && kstack_frames.is_empty() {
                     return 0;
                 }
-                let mut hasher = DefaultHasher::new();
-                ustack_frames.hash(&mut hasher);
-                kstack_frames.hash(&mut hasher);
-                let rst = hasher.finish();
-                let key = (event.tgid, rst);
-                let callstack_iid = {
+
+                let pid = event.tgid as i32;
+
+                if let Some(callstack_iid) = callstacks.get(pid, &ustack_frames, &kstack_frames) {
+                    let sample = create_sample(event, callstack_iid);
+                    callback(Event::Sample(sample));
+                } else {
                     let usyms = symbolize_user_stack(
                         symbolizer,
                         &ustack_frames,
@@ -239,30 +262,24 @@ where
                         map_files,
                     );
                     let ksyms = symbolize_kernel_stack(symbolizer, &kstack_frames);
-                    if usyms.is_empty() && ksyms.is_empty() {
-                        None
-                    } else {
-                        let iid = callstacks.sequence;
 
+                    if !usyms.is_empty() || !ksyms.is_empty() {
                         let mut intern_state = InternState::new();
                         intern_state.process_symbols(&usyms, &ustack_frames);
                         intern_state.process_symbols(&ksyms, &kstack_frames);
 
-                        if intern_state.function_names.is_empty() && intern_state.frames.is_empty()
+                        if !intern_state.function_names.is_empty()
+                            || !intern_state.frames.is_empty()
                         {
-                            None
-                        } else {
-                            let interned_data = intern_state.build_interned_data(iid);
+                            let callstack_iid =
+                                callstacks.insert(pid, &ustack_frames, &kstack_frames);
+                            let interned_data = intern_state.build_interned_data(callstack_iid);
                             callback(Event::InternedData(interned_data));
-                            callstacks.sequence += 1;
-                            callstacks.mapping.insert(key, iid);
-                            Some(iid)
+
+                            let sample = create_sample(event, callstack_iid);
+                            callback(Event::Sample(sample));
                         }
                     }
-                };
-                if let Some(callstack_iid) = callstack_iid {
-                    let sample = create_sample(event, callstack_iid);
-                    callback(Event::Sample(sample));
                 }
                 0
             })

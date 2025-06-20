@@ -3,9 +3,8 @@ use crate::interned_data_iter::{
 };
 use crate::label_iter::LabelIterator;
 use perfetto_format::{
-    create_callstack_interned_data, create_debug_annotation,
-    perfetto::profiling::CpuMode as PerfettoCpuMode, DebugAnnotation, DebugValue,
-    PerfettoStreamWriter,
+    create_debug_annotation, perfetto::profiling::CpuMode as PerfettoCpuMode, DebugAnnotation,
+    DebugValue, PerfettoStreamWriter,
 };
 use protocol::{ArchivedEvent, CpuMode, Event};
 use std::collections::HashMap;
@@ -109,13 +108,13 @@ impl<W: Write> PerfettoConverter<W> {
                 }
             }
 
-            let frames_data = frames_with_names
+            let frames_data: Vec<(&str, &str, u64)> = frames_with_names
                 .iter()
                 .map(|(name, rel_pc)| (name.as_str(), "", *rel_pc))
                 .collect();
 
-            let callstack_data = create_callstack_interned_data(callstack.iid(), frames_data);
-            self.writer.write_interned_data(callstack_data)?;
+            self.writer
+                .write_callstack_interned_data(callstack.iid(), frames_data)?;
         }
         Ok(())
     }
