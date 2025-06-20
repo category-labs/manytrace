@@ -43,6 +43,24 @@ impl<W: Write> PerfettoStreamWriter<W> {
         parent_uuid: u64,
     ) -> Result<u64, std::io::Error> {
         let thread_track_uuid = self.next_track_uuid();
+        self.write_thread_descriptor_with_uuid(
+            thread_track_uuid,
+            pid,
+            tid,
+            thread_name,
+            parent_uuid,
+        )?;
+        Ok(thread_track_uuid)
+    }
+
+    pub fn write_thread_descriptor_with_uuid(
+        &mut self,
+        thread_track_uuid: u64,
+        pid: u32,
+        tid: u32,
+        thread_name: Option<String>,
+        parent_uuid: u64,
+    ) -> Result<(), std::io::Error> {
         let thread_desc = ThreadDescriptor {
             pid: Some(pid as i32),
             tid: Some(tid as i32),
@@ -67,8 +85,7 @@ impl<W: Write> PerfettoStreamWriter<W> {
             ..Default::default()
         };
 
-        self.write_packet(packet)?;
-        Ok(thread_track_uuid)
+        self.write_packet(packet)
     }
 
     pub fn write_slice_begin(

@@ -42,20 +42,33 @@ impl<W: Write> PerfettoConverter<W> {
 
     fn ensure_thread_track(&mut self, pid: i32, tid: i32, name: Option<&str>) -> eyre::Result<u64> {
         let key = (pid, tid);
-        if let Some(&track_uuid) = self.thread_tracks.get(&key) {
-            return Ok(track_uuid);
+
+        match self.thread_tracks.get(&key).copied() {
+            Some(track_uuid) => {
+                if name.is_some() {
+                    let process_track_uuid = self.ensure_process_track(pid, None)?;
+                    self.writer.write_thread_descriptor_with_uuid(
+                        track_uuid,
+                        pid as u32,
+                        tid as u32,
+                        name.map(|n| n.to_string()),
+                        process_track_uuid,
+                    )?;
+                }
+                Ok(track_uuid)
+            }
+            None => {
+                let process_track_uuid = self.ensure_process_track(pid, None)?;
+                let track_uuid = self.writer.write_thread_descriptor(
+                    pid as u32,
+                    tid as u32,
+                    name.map(|n| n.to_string()),
+                    process_track_uuid,
+                )?;
+                self.thread_tracks.insert(key, track_uuid);
+                Ok(track_uuid)
+            }
         }
-
-        let process_track_uuid = self.ensure_process_track(pid, None)?;
-        let track_uuid = self.writer.write_thread_descriptor(
-            pid as u32,
-            tid as u32,
-            name.map(|name| name.to_string()),
-            process_track_uuid,
-        )?;
-
-        self.thread_tracks.insert(key, track_uuid);
-        Ok(track_uuid)
     }
 
     fn create_debug_annotations(labels: &impl LabelIterator) -> Vec<DebugAnnotation> {
