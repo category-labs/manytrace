@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nReporting aggregated CPU time per thread every second:\n");
 
     let mut builder = cpuutil::Object::new(CpuUtilConfig {
-        interval_ms: 1000,
+        frequency: 1000,
         pid_filters: vec![std::process::id()],
         filter_process: vec![],
     });

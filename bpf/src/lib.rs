@@ -102,7 +102,7 @@ impl BpfConfig {
 
             debug!(
                 module = "cpuutil",
-                interval_ms = cfg.interval_ms,
+                interval_ms = cfg.frequency,
                 pid_filters = ?cfg.pid_filters,
                 filter_process = ?cfg.filter_process,
                 "initializing cpu utilization monitor"
@@ -292,7 +292,7 @@ pid_filters = [1234, 5678]
         assert!(config.cpu_util.is_some());
 
         let cpu_config = config.cpu_util.as_ref().unwrap();
-        assert_eq!(cpu_config.interval_ms, 2000);
+        assert_eq!(cpu_config.frequency, 2000);
         assert_eq!(cpu_config.pid_filters, vec![1234, 5678]);
     }
 
@@ -308,7 +308,7 @@ cpu_util = {}
         assert!(config.cpu_util.is_some());
 
         let cpu_config = config.cpu_util.as_ref().unwrap();
-        assert_eq!(cpu_config.interval_ms, 1000);
+        assert_eq!(cpu_config.frequency, 1000);
         assert!(cpu_config.pid_filters.is_empty());
     }
 

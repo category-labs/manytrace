@@ -11,35 +11,25 @@ use libbpf_sys::{PERF_COUNT_SW_CPU_CLOCK, PERF_TYPE_SOFTWARE};
 use protocol::{Counter, Event, Labels};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryFrom;
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuUtilConfig {
-    #[serde(default = "default_interval_ms")]
-    pub interval_ms: u64,
+    #[serde(default = "default_frequency")]
+    pub frequency: u64,
     #[serde(default)]
     pub pid_filters: Vec<u32>,
     #[serde(default)]
     pub filter_process: Vec<String>,
 }
 
-impl Default for CpuUtilConfig {
-    fn default() -> Self {
-        Self {
-            interval_ms: default_interval_ms(),
-            pid_filters: Vec::new(),
-            filter_process: Vec::new(),
-        }
-    }
-}
-
-fn default_interval_ms() -> u64 {
-    1000
+fn default_frequency() -> u64 {
+    9
 }
 
 pub struct Object {
@@ -63,7 +53,7 @@ impl Object {
             &mut self.object,
             self.config.clone(),
             callback,
-            self.config.interval_ms,
+            self.config.frequency,
         )?;
         Ok(util)
     }
@@ -74,10 +64,11 @@ impl Object {
 pub struct CpuEvent {
     pub tid: u32,
     pub tgid: u32,
-    pub total_time_ns: u64,
+    pub end_time: u64,
     pub kernel_time_ns: u64,
+    pub start_time: u64,
     pub cpu: u32,
-    pub timestamp: u64,
+    pub boundary: bool,
 }
 
 unsafe impl plain::Plain for CpuEvent {}
@@ -91,22 +82,27 @@ impl<'a> TryFrom<&'a [u8]> for &'a CpuEvent {
     }
 }
 
-#[derive(Default)]
 struct ThreadStats {
     cpu_time_ns: u64,
     kernel_time_ns: u64,
-    min_timestamp: Option<u64>,
+    min_timestamp: u64,
+}
+
+impl Default for ThreadStats {
+    fn default() -> Self {
+        Self {
+            cpu_time_ns: 0,
+            kernel_time_ns: 0,
+            min_timestamp: u64::MAX,
+        }
+    }
 }
 
 pub struct CpuUtil<'this, F> {
     skel: CpuutilSkel<'this>,
     ringbuf: libbpf_rs::RingBuffer<'this>,
-    callback: Rc<RefCell<F>>,
-    interval: Duration,
-    last_report: Instant,
-    thread_stats: Rc<RefCell<HashMap<(i32, i32), ThreadStats>>>, // (pid, tid) -> stats
-    min_cpu_timestamps: Rc<RefCell<HashMap<u32, u64>>>,          // cpu -> min timestamp
-    _perf_links: Option<Vec<libbpf_rs::Link>>,
+    _perf_links: Vec<libbpf_rs::Link>,
+    _phantom: PhantomData<F>,
 }
 
 impl<'this, F> CpuUtil<'this, F>
@@ -116,8 +112,8 @@ where
     fn new(
         open_object: &'this mut MaybeUninit<OpenObject>,
         config: CpuUtilConfig,
-        callback: F,
-        interval_ms: u64,
+        mut callback: F,
+        freq: u64,
     ) -> Result<Self, BpfError> {
         let skel_builder = CpuutilSkelBuilder::default();
 
@@ -152,34 +148,76 @@ where
         skel.attach()
             .map_err(|e| BpfError::AttachError(format!("failed to attach bpf programs: {}", e)))?;
 
-        let thread_stats: Rc<RefCell<HashMap<(i32, i32), ThreadStats>>> =
-            Rc::new(RefCell::new(HashMap::new()));
-        let thread_stats_clone = thread_stats.clone();
-        let min_cpu_timestamps: Rc<RefCell<HashMap<u32, u64>>> =
-            Rc::new(RefCell::new(HashMap::new()));
-        let min_cpu_timestamps_clone = min_cpu_timestamps.clone();
-        let callback_rc = Rc::new(RefCell::new(callback));
-
+        let mut thread_stats: HashMap<(i32, i32), ThreadStats> = HashMap::new();
         let mut builder = RingBufferBuilder::new();
+        let nprocs = libbpf_rs::num_possible_cpus().unwrap();
+        let mut boundaries_reported = 0;
+        let mut max_timestamp = 0;
         builder
             .add(&skel.maps.events, move |data| {
                 let cpu_event: &CpuEvent = data.try_into().unwrap();
+                if cpu_event.tgid != 0 {
+                    let key = (cpu_event.tgid as i32, cpu_event.tid as i32);
+                    let entry: &mut ThreadStats = thread_stats.entry(key).or_default();
+                    entry.cpu_time_ns += cpu_event.end_time - cpu_event.start_time;
+                    entry.kernel_time_ns += cpu_event.kernel_time_ns;
+                    entry.min_timestamp = entry.min_timestamp.min(cpu_event.start_time);
+                }
+                max_timestamp = max_timestamp.max(cpu_event.end_time);
+                if cpu_event.boundary {
+                    boundaries_reported += 1;
+                    if boundaries_reported == nprocs {
+                        boundaries_reported = 0;
+                        for ((pid, tid), thread_stats) in thread_stats.iter_mut() {
+                            let elapsed_ns =
+                                (max_timestamp - thread_stats.min_timestamp) as f64;
+                            let cpu_percent =
+                                (thread_stats.cpu_time_ns as f64 / elapsed_ns) * 100.0;
+                            debug!(
+                                pid = pid,
+                                tid = tid,
+                                value = cpu_percent,
+                                cpu_time_ns = thread_stats.cpu_time_ns,
+                                elapsed_ns = elapsed_ns as u64,
+                                "emitting cpu_time counter"
+                            );
+                            let cpu_counter = Event::Counter(Counter {
+                                name: "cpu_time",
+                                value: cpu_percent,
+                                timestamp: thread_stats.min_timestamp,
+                                tid: *tid,
+                                pid: *pid,
+                                labels: Cow::Owned(Labels::new()),
+                                unit: Some("%"),
+                            });
+                            callback(cpu_counter);
 
-                let mut stats = thread_stats_clone.borrow_mut();
-                let key = (cpu_event.tgid as i32, cpu_event.tid as i32);
-                let entry: &mut ThreadStats = stats.entry(key).or_default();
-                entry.cpu_time_ns += cpu_event.total_time_ns;
-                entry.kernel_time_ns += cpu_event.kernel_time_ns;
-                entry.min_timestamp = match entry.min_timestamp {
-                    Some(ts) => Some(ts.min(cpu_event.timestamp)),
-                    None => Some(cpu_event.timestamp),
-                };
-
-                let mut cpu_timestamps = min_cpu_timestamps_clone.borrow_mut();
-                cpu_timestamps
-                    .entry(cpu_event.cpu)
-                    .and_modify(|ts| *ts = (*ts).min(cpu_event.timestamp))
-                    .or_insert(cpu_event.timestamp);
+                            let kernel_percent =
+                                (thread_stats.kernel_time_ns as f64 / elapsed_ns) * 100.0;
+                            debug!(
+                                pid = pid,
+                                tid = tid,
+                                value = kernel_percent,
+                                kernel_time_ns = thread_stats.kernel_time_ns,
+                                elapsed_ns = elapsed_ns as u64,
+                                "emitting kernel_time counter"
+                            );
+                            let kernel_counter = Event::Counter(Counter {
+                                name: "kernel_time",
+                                value: kernel_percent,
+                                timestamp: thread_stats.min_timestamp,
+                                tid: *tid,
+                                pid: *pid,
+                                labels: Cow::Owned(Labels::new()),
+                                unit: Some("%"),
+                            });
+                            callback(kernel_counter);
+                            thread_stats.cpu_time_ns = 0;
+                            thread_stats.kernel_time_ns = 0;
+                            thread_stats.min_timestamp = max_timestamp;
+                        }
+                    }
+                }
 
                 0
             })
@@ -189,8 +227,7 @@ where
             .build()
             .map_err(|e| BpfError::MapError(format!("failed to build ring buffer: {}", e)))?;
 
-        let perf_links = if interval_ms > 0 {
-            let freq = 1000 / interval_ms;
+        let perf_links = {
             let perf_fds = perf_event::perf_event_per_cpu(
                 PERF_TYPE_SOFTWARE,
                 PERF_COUNT_SW_CPU_CLOCK,
@@ -203,20 +240,14 @@ where
                 BpfError::AttachError(format!("failed to attach perf events: {}", e))
             })?;
 
-            Some(links)
-        } else {
-            None
+            links
         };
 
         Ok(CpuUtil {
             skel,
             ringbuf,
-            callback: callback_rc,
-            interval: Duration::from_millis(interval_ms),
-            last_report: Instant::now(),
-            thread_stats,
-            min_cpu_timestamps,
             _perf_links: perf_links,
+            _phantom: PhantomData,
         })
     }
 
@@ -224,52 +255,7 @@ where
         self.ringbuf
             .poll(timeout)
             .map_err(|e| BpfError::MapError(format!("failed to poll ring buffer: {}", e)))?;
-
-        let now = Instant::now();
-        if now.duration_since(self.last_report) >= self.interval {
-            self.report_interval_stats();
-            self.last_report = now;
-        }
-
         Ok(())
-    }
-
-    fn report_interval_stats(&mut self) {
-        let mut stats = self.thread_stats.borrow_mut();
-        let mut callback = self.callback.borrow_mut();
-        let mut cpu_timestamps = self.min_cpu_timestamps.borrow_mut();
-
-        let min_timestamp = cpu_timestamps.values().min().copied().unwrap_or(0);
-
-        for ((pid, tid), thread_stats) in stats.drain() {
-            if thread_stats.cpu_time_ns > 0 {
-                let cpu_counter = Event::Counter(Counter {
-                    name: "cpu_time_ns",
-                    value: thread_stats.cpu_time_ns as f64,
-                    timestamp: min_timestamp,
-                    tid,
-                    pid,
-                    labels: Cow::Owned(Labels::new()),
-                    unit: Some("ns"),
-                });
-                callback(cpu_counter);
-            }
-
-            if thread_stats.kernel_time_ns > 0 {
-                let kernel_counter = Event::Counter(Counter {
-                    name: "kernel_time_ns",
-                    value: thread_stats.kernel_time_ns as f64,
-                    timestamp: min_timestamp,
-                    tid,
-                    pid,
-                    labels: Cow::Owned(Labels::new()),
-                    unit: Some("ns"),
-                });
-                callback(kernel_counter);
-            }
-        }
-
-        cpu_timestamps.clear();
     }
 
     pub fn add_pid_filter(&mut self, pid: u32) -> Result<(), BpfError> {
@@ -285,13 +271,6 @@ where
         self.ringbuf
             .consume()
             .map_err(|e| BpfError::MapError(format!("failed to consume ring buffer: {}", e)))?;
-
-        let now = Instant::now();
-        if now.duration_since(self.last_report) >= self.interval {
-            self.report_interval_stats();
-            self.last_report = now;
-        }
-
         Ok(())
     }
 }
@@ -309,7 +288,7 @@ where
 mod root_tests {
     use super::*;
     use rstest::*;
-    use std::io::Write;
+    use std::{cell::RefCell, io::Write, rc::Rc, time::Instant};
     use tempfile::NamedTempFile;
 
     fn is_root() -> bool {
@@ -351,7 +330,7 @@ mod root_tests {
         let events_clone = cpuutil_setup.events.clone();
 
         let config = CpuUtilConfig {
-            interval_ms: 100,
+            frequency: 100,
             pid_filters: vec![cpuutil_setup.current_pid],
             filter_process: vec![],
         };
@@ -396,15 +375,19 @@ mod root_tests {
         assert!(!collected_events.is_empty(), "no events were captured");
         let cpu_time_events: Vec<_> = collected_events
             .iter()
-            .filter(|c| c.name == "cpu_time_ns" && c.pid == cpuutil_setup.current_pid as i32)
+            .filter(|c| c.name == "cpu_time" && c.pid == cpuutil_setup.current_pid as i32)
             .collect();
         assert!(
             !cpu_time_events.is_empty(),
-            "no cpu_time_ns events for current process"
+            "no cpu_time events for current process"
         );
 
         for event in &cpu_time_events {
             assert!(event.value > 0.0, "cpu time should be greater than zero");
+            assert!(
+                event.value <= 100.0,
+                "cpu time percentage should not exceed 100%"
+            );
         }
     }
 
@@ -416,7 +399,7 @@ mod root_tests {
         let events_clone = cpuutil_setup.events.clone();
 
         let config = CpuUtilConfig {
-            interval_ms: 100,
+            frequency: 100,
             pid_filters: vec![cpuutil_setup.current_pid],
             filter_process: vec![],
         };
@@ -462,12 +445,12 @@ mod root_tests {
 
         let kernel_time_events: Vec<_> = collected_events
             .iter()
-            .filter(|c| c.name == "kernel_time_ns" && c.pid == cpuutil_setup.current_pid as i32)
+            .filter(|c| c.name == "kernel_time" && c.pid == cpuutil_setup.current_pid as i32)
             .collect();
 
         let cpu_time_events: Vec<_> = collected_events
             .iter()
-            .filter(|c| c.name == "cpu_time_ns" && c.pid == cpuutil_setup.current_pid as i32)
+            .filter(|c| c.name == "cpu_time" && c.pid == cpuutil_setup.current_pid as i32)
             .collect();
 
         assert!(

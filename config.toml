@@ -9,5 +9,5 @@ filter_process = ["continuous"]
 [bpf.thread_tracker]
 
 [bpf.cpu_util]
-interval_ms = 100
-filter_process = ["continuous"]
+frequency = 10
+filter_process = ["continuous", "manytrace"]

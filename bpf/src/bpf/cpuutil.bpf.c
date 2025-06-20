@@ -17,10 +17,11 @@ struct cpu_state {
 struct cpu_event {
     u32 tid;
     u32 tgid;
-    u64 total_time_ns;
+    u64 end_time;
     u64 kernel_time_ns;
+    u64 start_time;
     u32 cpu;
-    u64 timestamp;
+    bool boundary;
 };
 
 struct {
@@ -66,7 +67,7 @@ static __always_inline bool should_track_tgid(u32 tgid) {
     return true;
 }
 
-static __always_inline void submit_cpu_event(struct cpu_state *state, u64 end_time) {
+static __always_inline void submit_cpu_event(struct cpu_state *state, u64 end_time, bool boundary) {
     struct cpu_event *e;
     
     e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
@@ -81,10 +82,11 @@ static __always_inline void submit_cpu_event(struct cpu_state *state, u64 end_ti
     
     e->tid = state->tid;
     e->tgid = state->tgid;
-    e->total_time_ns = end_time - state->start_time;
+    e->end_time = end_time;
     e->kernel_time_ns = kernel_time;
     e->cpu = bpf_get_smp_processor_id();
-    e->timestamp = state->start_time;
+    e->start_time = state->start_time;
+    e->boundary = boundary;
     
     bpf_ringbuf_submit(e, 0);
 }
@@ -108,7 +110,7 @@ int handle_sched_switch(struct trace_event_raw_sched_switch *ctx)
     
     if (state->tid == prev_pid && state->tid != 0) {
         if (should_track_tgid(state->tgid)) {
-            submit_cpu_event(state, now);
+            submit_cpu_event(state, now, false);
         }
     }
     
@@ -186,13 +188,12 @@ int handle_boundary_event(void *ctx)
     u32 tid = pid_tgid;
     u32 tgid = pid_tgid >> 32;
     
-    if (state->tid != tid || tid == 0 || !should_track_tgid(tgid)) {
-        return 0;
+    if (should_track_tgid(tgid)) {
+        state->tgid = tgid;
     }
 
     u64 now = get_time();
-    state->tgid = tgid;
-    submit_cpu_event(state, now);
+    submit_cpu_event(state, now, true);
     
     state->start_time = now;
     if (state->in_kernel) {
