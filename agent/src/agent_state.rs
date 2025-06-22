@@ -1,9 +1,10 @@
 use arc_swap::ArcSwapOption;
 use mpscbuf::{Producer as MpscProducer, WakeupStrategy};
-use nix::sys::socket::{recvmsg, sendmsg, ControlMessageOwned, MsgFlags};
+use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
 use protocol::{ControlMessage, TimestampType};
-use std::collections::HashMap;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -11,12 +12,28 @@ use tracing::{debug, warn};
 use crate::agent::ProducerState;
 use crate::{AgentError, Producer, Result};
 
+pub(crate) enum Action<'a> {
+    SendMessage {
+        stream: BorrowedFd<'a>,
+        message: ControlMessage<'static>,
+    },
+    AddEpoll {
+        stream: BorrowedFd<'a>,
+        token: u64,
+    },
+    DeleteEpoll {
+        stream: BorrowedFd<'a>,
+        token: u64,
+    },
+}
+
 pub(crate) struct AgentContext {
     pub(crate) another_started: bool,
 }
 
 pub(crate) const CLIENT_TIMEOUT_NS: u64 = 2_000_000_000;
 
+#[derive(Clone)]
 pub(crate) enum State {
     Pending,
     Started,
@@ -25,8 +42,8 @@ pub(crate) enum State {
 pub(crate) struct AgentClientState {
     client_id: u64,
     stream: UnixStream,
-    state: State,
-    timestamp_ns: u64,
+    state: RefCell<State>,
+    timestamp_ns: RefCell<u64>,
 }
 
 impl AgentClientState {
@@ -34,29 +51,26 @@ impl AgentClientState {
         AgentClientState {
             client_id,
             stream,
-            state: State::Pending,
-            timestamp_ns: get_timestamp_ns(),
+            state: RefCell::new(State::Pending),
+            timestamp_ns: RefCell::new(get_timestamp_ns()),
         }
-    }
-
-    pub(crate) fn stream(&self) -> &UnixStream {
-        &self.stream
-    }
-
-    pub(crate) fn into_stream(self) -> UnixStream {
-        self.stream
     }
 
     pub(crate) fn timer(&self, timeout_ns: u64) -> bool {
         let current_time = get_timestamp_ns();
-        let elapsed = current_time.saturating_sub(self.timestamp_ns);
+        let elapsed = current_time.saturating_sub(*self.timestamp_ns.borrow());
         elapsed <= timeout_ns
     }
 
-    pub(crate) fn handle_message(&mut self, ctx: &mut AgentContext) -> MessageResult {
-        match &self.state {
-            State::Pending => handle_pending_state(self, ctx),
-            State::Started => handle_started_state(self),
+    pub(crate) fn handle_message<'a>(
+        &'a self,
+        ctx: &AgentContext,
+        actions: &mut VecDeque<Action<'a>>,
+    ) -> MessageResult {
+        let current_state = self.state.borrow().clone();
+        match current_state {
+            State::Pending => handle_pending_state(self, ctx, actions),
+            State::Started => handle_started_state(self, actions),
         }
     }
 }
@@ -69,14 +83,15 @@ pub(crate) enum MessageResult {
     Error(AgentError),
 }
 
-fn handle_pending_state(
-    client_state: &mut AgentClientState,
-    ctx: &mut AgentContext,
+fn handle_pending_state<'a>(
+    client_state: &'a AgentClientState,
+    ctx: &AgentContext,
+    actions: &mut VecDeque<Action<'a>>,
 ) -> MessageResult {
-    match handle_start_message(&client_state.stream, ctx, client_state.client_id) {
+    match handle_start_message(&client_state.stream, ctx, client_state.client_id, actions) {
         Ok(Some(producer_state_result)) => {
-            client_state.timestamp_ns = get_timestamp_ns();
-            client_state.state = State::Started;
+            *client_state.timestamp_ns.borrow_mut() = get_timestamp_ns();
+            *client_state.state.borrow_mut() = State::Started;
             debug!(client_id = client_state.client_id, "client started");
             MessageResult::Started(producer_state_result)
         }
@@ -88,27 +103,30 @@ fn handle_pending_state(
     }
 }
 
-fn handle_started_state(client_state: &mut AgentClientState) -> MessageResult {
+fn handle_started_state<'a>(
+    client_state: &'a AgentClientState,
+    actions: &mut VecDeque<Action<'a>>,
+) -> MessageResult {
     match handle_client_message(&client_state.stream) {
         Ok(Some(protocol::ControlMessage::Stop)) => {
             debug!(client_id = client_state.client_id, "client sent stop");
-            let ack_msg = ControlMessage::Ack;
-            if let Err(e) = send_message(&client_state.stream, &ack_msg) {
-                warn!(client_id = client_state.client_id, error = ?e, "failed to send stop ack");
-            }
+            actions.push_back(Action::SendMessage {
+                stream: client_state.stream.as_fd(),
+                message: ControlMessage::Ack,
+            });
             MessageResult::Disconnect
         }
         Ok(Some(protocol::ControlMessage::Continue)) => {
-            client_state.timestamp_ns = get_timestamp_ns();
+            *client_state.timestamp_ns.borrow_mut() = get_timestamp_ns();
             debug!(
                 client_id = client_state.client_id,
-                timestamp = client_state.timestamp_ns,
+                timestamp = *client_state.timestamp_ns.borrow(),
                 "client sent continue"
             );
-            let ack_msg = ControlMessage::Ack;
-            if let Err(e) = send_message(&client_state.stream, &ack_msg) {
-                warn!(client_id = client_state.client_id, error = ?e, "failed to send continue ack");
-            }
+            actions.push_back(Action::SendMessage {
+                stream: client_state.stream.as_fd(),
+                message: ControlMessage::Ack,
+            });
             MessageResult::Continue
         }
         Ok(Some(_)) => {
@@ -130,10 +148,11 @@ fn handle_started_state(client_state: &mut AgentClientState) -> MessageResult {
     }
 }
 
-fn handle_start_message(
-    stream: &UnixStream,
-    ctx: &mut AgentContext,
+fn handle_start_message<'a>(
+    stream: &'a UnixStream,
+    ctx: &AgentContext,
     client_id: u64,
+    actions: &mut VecDeque<Action<'a>>,
 ) -> Result<Option<Arc<ProducerState>>> {
     let mut cmsg_buffer = nix::cmsg_space!([RawFd; 2]);
     let mut msg_buf = [0u8; 1024];
@@ -161,10 +180,12 @@ fn handle_start_message(
     match archived_msg {
         protocol::ArchivedControlMessage::Start { buffer_size, args } => {
             if ctx.another_started {
-                let error_msg = "another client already started".to_string();
-                let nack_msg = ControlMessage::Nack { error: &error_msg };
-                send_message(stream, &nack_msg)?;
-                debug!("sent nack - another client already started");
+                let error_msg = "another client already started";
+                actions.push_back(Action::SendMessage {
+                    stream: stream.as_fd(),
+                    message: ControlMessage::Nack { error: error_msg },
+                });
+                debug!("queued nack - another client already started");
                 return Ok(None);
             }
 
@@ -181,10 +202,13 @@ fn handle_start_message(
 
                     // Validate the log filter before proceeding
                     if let Err(e) = tracing_subscriber::EnvFilter::try_new(&log_filter) {
-                        let error_msg = format!("Invalid log filter '{}': {}", log_filter, e);
-                        let nack_msg = ControlMessage::Nack { error: &error_msg };
-                        send_message(stream, &nack_msg)?;
-                        debug!("sent nack - {}", error_msg);
+                        debug!("queued nack - invalid log filter '{}': {}", log_filter, e);
+                        actions.push_back(Action::SendMessage {
+                            stream: stream.as_fd(),
+                            message: ControlMessage::Nack {
+                                error: "invalid log filter",
+                            },
+                        });
                         return Ok(None);
                     }
 
@@ -250,9 +274,11 @@ fn handle_start_message(
 
             debug!(buffer_size, client_id, "producer initialized");
 
-            let ack_msg = ControlMessage::Ack;
-            send_message(stream, &ack_msg)?;
-            debug!("sent ack - producer initialized");
+            actions.push_back(Action::SendMessage {
+                stream: stream.as_fd(),
+                message: ControlMessage::Ack,
+            });
+            debug!("queued ack - producer initialized");
 
             Ok(Some(producer_state))
         }
@@ -293,136 +319,102 @@ fn handle_client_message(
     }
 }
 
-fn send_message(stream: &UnixStream, msg: &ControlMessage) -> Result<()> {
-    let serialized = protocol::compute_length(msg)?;
-    let mut buf = vec![0u8; serialized];
-    protocol::serialize_to_buf(msg, &mut buf)?;
-
-    let iov = [std::io::IoSlice::new(&buf)];
-    sendmsg::<()>(stream.as_raw_fd(), &iov, &[], MsgFlags::empty(), None)?;
-    Ok(())
-}
-
-pub(crate) enum EpollAction<'a> {
-    Add { fd: &'a UnixStream, token: u64 },
-    Delete { fd: UnixStream },
-}
-
 pub(crate) struct AgentState {
-    pending_clients: HashMap<u64, AgentClientState>,
-    started_client: Option<(u64, AgentClientState)>,
+    clients: HashMap<u64, AgentClientState>,
+    started_client: Option<u64>,
     next_client_id: u64,
     ctx: AgentContext,
     timeout_ns: u64,
+    producer_state: Arc<ArcSwapOption<ProducerState>>,
 }
 
 impl AgentState {
-    pub(crate) fn new(timeout_ms: u16) -> Self {
+    pub(crate) fn new(timeout_ms: u16, producer_state: Arc<ArcSwapOption<ProducerState>>) -> Self {
         AgentState {
-            pending_clients: HashMap::new(),
+            clients: HashMap::new(),
             started_client: None,
             next_client_id: 1,
             ctx: AgentContext {
                 another_started: false,
             },
             timeout_ns: timeout_ms as u64 * 1_000_000,
+            producer_state,
         }
     }
 
-    pub(crate) fn accept_connection(&mut self, stream: UnixStream) -> Result<(u64, EpollAction)> {
+    pub(crate) fn drop_state(&mut self, token: u64) {
+        self.clients.remove(&token);
+    }
+
+    pub(crate) fn accept_connection<'a>(
+        &'a mut self,
+        stream: UnixStream,
+        actions: &mut VecDeque<Action<'a>>,
+    ) -> Result<u64> {
         let client_id = self.next_client_id;
         self.next_client_id += 1;
 
         stream.set_nonblocking(true)?;
 
-        self.pending_clients
+        self.clients
             .insert(client_id, AgentClientState::new(client_id, stream));
 
         debug!(client_id, "client connected, waiting for start message");
 
-        Ok((
-            client_id,
-            EpollAction::Add {
-                fd: self.pending_clients.get(&client_id).unwrap().stream(),
+        if let Some(client_state) = self.clients.get(&client_id) {
+            actions.push_back(Action::AddEpoll {
+                stream: client_state.stream.as_fd(),
                 token: client_id,
-            },
-        ))
-    }
-
-    pub(crate) fn handle_event(
-        &mut self,
-        event_data: u64,
-        producer_state: &Arc<ArcSwapOption<ProducerState>>,
-    ) -> Option<EpollAction> {
-        if let Some(mut client) = self.pending_clients.remove(&event_data) {
-            match client.handle_message(&mut self.ctx) {
-                MessageResult::Continue => {
-                    self.pending_clients.insert(event_data, client);
-                    None
-                }
-                MessageResult::Started(new_producer_state) => {
-                    producer_state.store(Some(new_producer_state));
-                    self.ctx.another_started = true;
-                    self.started_client = Some((event_data, client));
-                    None
-                }
-                MessageResult::Disconnect => {
-                    let fd = client.into_stream();
-                    Some(EpollAction::Delete { fd })
-                }
-                MessageResult::Error(_) => {
-                    let fd = client.into_stream();
-                    Some(EpollAction::Delete { fd })
-                }
-            }
-        } else if let Some((id, _)) = &self.started_client {
-            if *id == event_data {
-                if let Some((_, mut client)) = self.started_client.take() {
-                    match client.handle_message(&mut self.ctx) {
-                        MessageResult::Continue => {
-                            self.started_client = Some((event_data, client));
-                            None
-                        }
-                        MessageResult::Started(_) => {
-                            self.started_client = Some((event_data, client));
-                            None
-                        }
-                        MessageResult::Disconnect | MessageResult::Error(_) => {
-                            let fd = client.into_stream();
-                            producer_state.store(None);
-                            self.ctx.another_started = false;
-                            Some(EpollAction::Delete { fd })
-                        }
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
+            });
         }
+
+        Ok(client_id)
     }
 
-    pub(crate) fn timer(
-        &mut self,
-        producer_state: &Arc<ArcSwapOption<ProducerState>>,
-    ) -> Vec<EpollAction> {
+    pub(crate) fn handle_event<'a>(
+        &'a mut self,
+        event_data: u64,
+        actions: &mut VecDeque<Action<'a>>,
+    ) {
+        if let Some(client) = self.clients.get(&event_data) {
+            match client.handle_message(&self.ctx, actions) {
+                MessageResult::Continue => {}
+                MessageResult::Started(new_producer_state) => {
+                    self.producer_state.store(Some(new_producer_state));
+                    self.ctx.another_started = true;
+                    self.started_client = Some(event_data);
+                }
+                MessageResult::Disconnect | MessageResult::Error(_) => {
+                    if self
+                        .started_client
+                        .map(|id| id == event_data)
+                        .unwrap_or(false)
+                    {
+                        self.ctx.another_started = false;
+                        self.started_client = None;
+                    }
+                    actions.push_back(Action::DeleteEpoll {
+                        stream: client.stream.as_fd(),
+                        token: event_data,
+                    });
+                }
+            }
+        };
+    }
+
+    pub(crate) fn timer<'a>(&'a mut self, actions: &mut VecDeque<Action<'a>>) {
         debug!(
-            pending_clients = self.pending_clients.len(),
+            pending_clients = self.clients.len(),
             has_started_client = self.started_client.is_some(),
             "timer check invoked"
         );
-        let mut actions = Vec::new();
 
-        let mut timed_out_clients = Vec::new();
-        for (client_id, client) in self.pending_clients.iter() {
+        for (client_id, client) in self.clients.iter() {
             let is_alive = client.timer(self.timeout_ns);
             debug!(
                 client_id,
                 is_alive,
-                elapsed_ns = get_timestamp_ns().saturating_sub(client.timestamp_ns),
+                elapsed_ns = get_timestamp_ns().saturating_sub(*client.timestamp_ns.borrow()),
                 timeout_ns = self.timeout_ns,
                 "checking pending client timer"
             );
@@ -432,28 +424,18 @@ impl AgentState {
                     timeout_s = self.timeout_ns / 1_000_000_000,
                     "pending client timed out, disconnecting"
                 );
-                timed_out_clients.push(*client_id);
-            }
-        }
-
-        for client_id in &timed_out_clients {
-            if let Some(client) = self.pending_clients.remove(client_id) {
-                actions.push(EpollAction::Delete {
-                    fd: client.into_stream(),
+                actions.push_back(Action::DeleteEpoll {
+                    token: *client_id,
+                    stream: client.stream.as_fd(),
                 });
             }
         }
 
-        for client_id in timed_out_clients {
-            self.pending_clients.remove(&client_id);
-        }
-
-        if let Some((client_id, client)) = &self.started_client {
-            let is_alive = client.timer(self.timeout_ns);
+        if let Some(client_id) = &self.started_client {
+            let is_alive = self.clients.get(client_id).unwrap().timer(self.timeout_ns);
             debug!(
                 client_id,
                 is_alive,
-                elapsed_ns = get_timestamp_ns().saturating_sub(client.timestamp_ns),
                 timeout_ns = self.timeout_ns,
                 "checking started client timer"
             );
@@ -463,18 +445,17 @@ impl AgentState {
                     timeout_s = self.timeout_ns / 1_000_000_000,
                     "started client timed out, disconnecting"
                 );
-                if let Some((_, client)) = self.started_client.take() {
-                    actions.push(EpollAction::Delete {
-                        fd: client.into_stream(),
+                if let Some(client) = self.clients.get(client_id) {
+                    actions.push_back(Action::DeleteEpoll {
+                        token: *client_id,
+                        stream: client.stream.as_fd(),
                     });
                 }
                 self.started_client = None;
-                producer_state.store(None);
+                self.producer_state.store(None);
                 self.ctx.another_started = false;
             }
         }
-
-        actions
     }
 }
 
@@ -604,8 +585,8 @@ mod tests {
         let client_state = AgentClientState::new(client_id, server);
 
         assert_eq!(client_state.client_id, 42);
-        assert!(matches!(client_state.state, State::Pending));
-        assert!(client_state.timestamp_ns > 0);
+        assert!(matches!(*client_state.state.borrow(), State::Pending));
+        assert!(*client_state.timestamp_ns.borrow() > 0);
     }
 
     #[rstest]
@@ -619,10 +600,10 @@ mod tests {
     #[rstest]
     fn test_agent_client_state_timer_after_timeout(socket_pair: (UnixStream, UnixStream)) {
         let (_client, server) = socket_pair;
-        let mut client_state = AgentClientState::new(1, server);
+        let client_state = AgentClientState::new(1, server);
         let timeout_ns = 2_000_000_000;
 
-        client_state.timestamp_ns = get_timestamp_ns() - timeout_ns - 1;
+        *client_state.timestamp_ns.borrow_mut() = get_timestamp_ns() - timeout_ns - 1;
 
         assert!(!client_state.timer(timeout_ns));
     }
@@ -630,29 +611,32 @@ mod tests {
     #[rstest]
     fn test_pending_state_no_message(
         socket_pair: (UnixStream, UnixStream),
-        mut agent_context: AgentContext,
+        agent_context: AgentContext,
     ) {
         let (_client, server) = socket_pair;
-        let mut client_state = AgentClientState::new(1, server);
+        let client_state = AgentClientState::new(1, server);
+        let mut actions = VecDeque::new();
 
-        let result = client_state.handle_message(&mut agent_context);
+        let result = client_state.handle_message(&agent_context, &mut actions);
 
         assert!(matches!(result, MessageResult::Continue));
-        assert!(matches!(client_state.state, State::Pending));
+        assert!(matches!(*client_state.state.borrow(), State::Pending));
+        assert!(actions.is_empty());
     }
 
     #[rstest]
     fn test_pending_state_with_start_no_fds(socket_pair: (UnixStream, UnixStream)) {
         let (client, server) = socket_pair;
-        let mut client_state = AgentClientState::new(1, server);
-        let mut ctx = AgentContext {
+        let client_state = AgentClientState::new(1, server);
+        let ctx = AgentContext {
             another_started: false,
         };
+        let mut actions = VecDeque::new();
 
         send_start_message(&client, 1024, "debug");
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        let result = client_state.handle_message(&mut ctx);
+        let result = client_state.handle_message(&ctx, &mut actions);
 
         assert!(matches!(result, MessageResult::Error(_)));
     }
@@ -663,18 +647,20 @@ mod tests {
         test_consumer: Consumer,
     ) {
         let (client, server) = socket_pair;
-        let mut client_state = AgentClientState::new(1, server);
-        let mut ctx = AgentContext {
+        let client_state = AgentClientState::new(1, server);
+        let ctx = AgentContext {
             another_started: false,
         };
+        let mut actions = VecDeque::new();
 
         send_start_message_with_fds(&client, &test_consumer);
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        let result = client_state.handle_message(&mut ctx);
+        let result = client_state.handle_message(&ctx, &mut actions);
 
         assert!(matches!(result, MessageResult::Started(_)));
-        assert!(matches!(client_state.state, State::Started));
+        assert!(matches!(*client_state.state.borrow(), State::Started));
+        assert_eq!(actions.len(), 1); // Should have ACK message
     }
 
     #[rstest]
@@ -683,76 +669,85 @@ mod tests {
         test_consumer: Consumer,
     ) {
         let (client, server) = socket_pair;
-        let mut client_state = AgentClientState::new(1, server);
-        let mut ctx = AgentContext {
+        let client_state = AgentClientState::new(1, server);
+        let ctx = AgentContext {
             another_started: true,
         };
+        let mut actions = VecDeque::new();
 
         send_start_message_with_fds(&client, &test_consumer);
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        let result = client_state.handle_message(&mut ctx);
+        let result = client_state.handle_message(&ctx, &mut actions);
 
         assert!(matches!(result, MessageResult::Continue));
-        assert!(matches!(client_state.state, State::Pending));
+        assert!(matches!(*client_state.state.borrow(), State::Pending));
+        assert_eq!(actions.len(), 1); // Should have NACK message
     }
 
     #[rstest]
     fn test_started_state_continue_message(socket_pair: (UnixStream, UnixStream)) {
         let (client, server) = socket_pair;
-        let mut client_state = AgentClientState::new(1, server);
-        client_state.state = State::Started;
-        let old_timestamp = client_state.timestamp_ns;
+        let client_state = AgentClientState::new(1, server);
+        *client_state.state.borrow_mut() = State::Started;
+        let old_timestamp = *client_state.timestamp_ns.borrow();
 
-        let mut ctx = AgentContext {
+        let ctx = AgentContext {
             another_started: true,
         };
+        let mut actions = VecDeque::new();
 
         send_control_message(&client, ControlMessage::Continue);
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        let result = client_state.handle_message(&mut ctx);
+        let result = client_state.handle_message(&ctx, &mut actions);
 
         assert!(matches!(result, MessageResult::Continue));
-        assert!(matches!(client_state.state, State::Started));
-        assert!(client_state.timestamp_ns > old_timestamp);
+        assert!(matches!(*client_state.state.borrow(), State::Started));
+        assert!(*client_state.timestamp_ns.borrow() > old_timestamp);
+        assert_eq!(actions.len(), 1); // Should have ACK message
     }
 
     #[rstest]
     fn test_started_state_stop_message(socket_pair: (UnixStream, UnixStream)) {
         let (client, server) = socket_pair;
-        let mut client_state = AgentClientState::new(1, server);
-        client_state.state = State::Started;
-        let mut ctx = AgentContext {
+        let client_state = AgentClientState::new(1, server);
+        *client_state.state.borrow_mut() = State::Started;
+        let ctx = AgentContext {
             another_started: true,
         };
+        let mut actions = VecDeque::new();
 
         send_control_message(&client, ControlMessage::Stop);
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        let result = client_state.handle_message(&mut ctx);
+        let result = client_state.handle_message(&ctx, &mut actions);
         assert!(matches!(result, MessageResult::Disconnect));
+        assert_eq!(actions.len(), 1); // Should have ACK message
     }
 
     #[rstest]
     fn test_started_state_no_message(socket_pair: (UnixStream, UnixStream)) {
         let (_client, server) = socket_pair;
-        let mut client_state = AgentClientState::new(1, server);
-        client_state.state = State::Started;
-        let mut ctx = AgentContext {
+        let client_state = AgentClientState::new(1, server);
+        *client_state.state.borrow_mut() = State::Started;
+        let ctx = AgentContext {
             another_started: true,
         };
+        let mut actions = VecDeque::new();
 
-        let result = client_state.handle_message(&mut ctx);
+        let result = client_state.handle_message(&ctx, &mut actions);
 
         assert!(matches!(result, MessageResult::Continue));
+        assert!(actions.is_empty());
     }
 
     #[rstest]
     fn test_agent_state_new() {
-        let agent_state = AgentState::new(2000);
+        let producer_state = Arc::new(ArcSwapOption::empty());
+        let agent_state = AgentState::new(2000, producer_state);
 
-        assert!(agent_state.pending_clients.is_empty());
+        assert!(agent_state.clients.is_empty());
         assert!(agent_state.started_client.is_none());
         assert_eq!(agent_state.next_client_id, 1);
         assert!(!agent_state.ctx.another_started);
@@ -761,22 +756,27 @@ mod tests {
 
     #[rstest]
     fn test_accept_connection(socket_pair: (UnixStream, UnixStream)) {
-        let mut agent_state = AgentState::new(2000);
+        let producer_state = Arc::new(ArcSwapOption::empty());
+        let mut agent_state = AgentState::new(2000, producer_state);
         let (_client, server) = socket_pair;
+        let mut actions = VecDeque::new();
 
-        let result = agent_state.accept_connection(server);
+        let result = agent_state.accept_connection(server, &mut actions);
 
         assert!(result.is_ok());
-        let (client_id, action) = result.unwrap();
+        let client_id = result.unwrap();
         assert_eq!(client_id, 1);
-        assert!(matches!(action, EpollAction::Add { .. }));
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(actions[0], Action::AddEpoll { .. }));
         assert_eq!(agent_state.next_client_id, 2);
-        assert!(agent_state.pending_clients.contains_key(&1));
+        assert!(agent_state.clients.contains_key(&1));
     }
 
     #[rstest]
     fn test_accept_multiple_connections() {
-        let mut agent_state = AgentState::new(2000);
+        let producer_state = Arc::new(ArcSwapOption::empty());
+        let mut agent_state = AgentState::new(2000, producer_state);
+        
 
         // Create first socket pair
         let temp_dir1 = TempDir::new().unwrap();
@@ -796,66 +796,77 @@ mod tests {
         client2.set_nonblocking(true).unwrap();
         server2.set_nonblocking(true).unwrap();
 
-        let result1 = agent_state.accept_connection(server1);
-        assert!(result1.is_ok());
-        let (client_id1, _) = result1.unwrap();
-
-        let result2 = agent_state.accept_connection(server2);
-        assert!(result2.is_ok());
-        let (client_id2, _) = result2.unwrap();
+        let client_id1 = {
+            let mut actions = VecDeque::new();
+            let result = agent_state.accept_connection(server1, &mut actions);
+            result.unwrap()
+        };
+        let client_id2 = {
+            let mut actions = VecDeque::new();
+            let result = agent_state.accept_connection(server2, &mut actions);
+            result.unwrap()
+        };
 
         assert_eq!(client_id1, 1);
         assert_eq!(client_id2, 2);
         assert_eq!(agent_state.next_client_id, 3);
-        assert_eq!(agent_state.pending_clients.len(), 2);
+        assert_eq!(agent_state.clients.len(), 2);
     }
 
     #[rstest]
     fn test_handle_event_nonexistent_client() {
-        let mut agent_state = AgentState::new(2000);
-        let producer = Arc::new(ArcSwapOption::empty());
+        let producer_state = Arc::new(ArcSwapOption::empty());
+        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut actions = VecDeque::new();
 
-        let result = agent_state.handle_event(999, &producer);
+        agent_state.handle_event(999, &mut actions);
 
-        assert!(result.is_none());
+        assert!(actions.is_empty());
     }
 
     #[rstest]
     fn test_handle_event_pending_client_continue(socket_pair: (UnixStream, UnixStream)) {
-        let mut agent_state = AgentState::new(2000);
+        let producer_state = Arc::new(ArcSwapOption::empty());
+        let mut agent_state = AgentState::new(2000, producer_state);
         let (_client, server) = socket_pair;
-        let producer = Arc::new(ArcSwapOption::empty());
+        let mut actions = VecDeque::new();
 
-        let (client_id, _) = agent_state.accept_connection(server).unwrap();
+        let client_id = {
+            let result = agent_state.accept_connection(server, &mut actions);
+            result.unwrap()
+        };
+        actions.clear();
+        let mut actions = VecDeque::new();
+        agent_state.handle_event(client_id, &mut actions);
 
-        let result = agent_state.handle_event(client_id, &producer);
-
-        assert!(result.is_none());
-        assert!(agent_state.pending_clients.contains_key(&client_id));
+        assert!(actions.is_empty());
+        assert!(agent_state.clients.contains_key(&client_id));
     }
 
     #[rstest]
     fn test_timer_no_clients() {
-        let mut agent_state = AgentState::new(2000);
-        let producer = Arc::new(ArcSwapOption::empty());
+        let producer_state = Arc::new(ArcSwapOption::empty());
+        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut actions = VecDeque::new();
 
-        let actions = agent_state.timer(&producer);
+        agent_state.timer(&mut actions);
 
         assert!(actions.is_empty());
     }
 
     #[rstest]
     fn test_timer_pending_client_not_timed_out(socket_pair: (UnixStream, UnixStream)) {
-        let mut agent_state = AgentState::new(2000);
+        let producer_state = Arc::new(ArcSwapOption::empty());
+        let mut agent_state = AgentState::new(2000, producer_state);
         let (_client, server) = socket_pair;
-        let producer = Arc::new(ArcSwapOption::empty());
+        let mut actions = VecDeque::new();
 
-        let (client_id, _) = agent_state.accept_connection(server).unwrap();
-
-        let actions = agent_state.timer(&producer);
+        let client_id = agent_state.accept_connection(server, &mut actions).unwrap();
+        let mut actions = VecDeque::new();
+        agent_state.timer(&mut actions);
 
         assert!(actions.is_empty());
-        assert!(agent_state.pending_clients.contains_key(&client_id));
+        assert!(agent_state.clients.contains_key(&client_id));
     }
 
     #[rstest]
@@ -865,18 +876,20 @@ mod tests {
     fn test_timestamp_types(
         socket_pair: (UnixStream, UnixStream),
         test_consumer: Consumer,
-        mut agent_context: AgentContext,
+        agent_context: AgentContext,
         #[case] timestamp_type: protocol::TimestampType,
     ) {
         let (client, server) = socket_pair;
-        let mut client_state = AgentClientState::new(1, server);
+        let client_state = AgentClientState::new(1, server);
+        let mut actions = VecDeque::new();
 
         send_start_message_with_fds_and_timestamp(&client, &test_consumer, timestamp_type);
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        let result = client_state.handle_message(&mut agent_context);
+        let result = client_state.handle_message(&agent_context, &mut actions);
 
         assert!(matches!(result, MessageResult::Started(_)));
-        assert!(matches!(client_state.state, State::Started));
+        assert!(matches!(*client_state.state.borrow(), State::Started));
+        assert_eq!(actions.len(), 1); // Should have ACK message
     }
 }
