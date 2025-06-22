@@ -29,21 +29,33 @@ impl Spinlock {
     }
 
     #[inline(always)]
-    pub(crate) fn lock(&self) -> SpinlockGuard {
+    pub(crate) fn try_lock(&self) -> Option<SpinlockGuard> {
         use crate::common::likely;
+        const SPIN_LIMIT: usize = 100_000;
+        let mut iterations = 0;
+
         loop {
             if likely(
                 self.lock
                     .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
                     .is_ok(),
             ) {
-                break;
+                return Some(SpinlockGuard { spinlock: self });
             }
+
+            iterations += 1;
+            if iterations >= SPIN_LIMIT {
+                return None;
+            }
+
             while self.lock.load(Ordering::Relaxed) {
                 std::hint::spin_loop();
+                iterations += 1;
+                if iterations >= SPIN_LIMIT {
+                    return None;
+                }
             }
         }
-        SpinlockGuard { spinlock: self }
     }
 }
 
@@ -67,8 +79,8 @@ impl Spinlock {
         }
     }
 
-    pub(crate) fn lock(&self) -> impl std::ops::Deref<Target = ()> + '_ {
-        self.inner.lock().unwrap()
+    pub(crate) fn try_lock(&self) -> Option<impl std::ops::Deref<Target = ()> + '_> {
+        Some(self.inner.lock().unwrap())
     }
 }
 

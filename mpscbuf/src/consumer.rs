@@ -151,14 +151,14 @@ impl Consumer {
         self.ringbuf
             .metadata()
             .consumer_waiting
-            .store(true, crate::sync::Ordering::Relaxed);
+            .store(true, crate::sync::Ordering::Release);
 
         let result = self.notification.wait();
 
         self.ringbuf
             .metadata()
             .consumer_waiting
-            .store(false, crate::sync::Ordering::Relaxed);
+            .store(false, crate::sync::Ordering::Release);
 
         trace!(success = result.is_ok(), "consumer wait end");
 

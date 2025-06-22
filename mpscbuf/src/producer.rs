@@ -73,7 +73,12 @@ impl Producer {
         let total_size = round_up_to_8(size + HEADER_SIZE);
         let consumer_pos = self.ringbuf.consumer_pos();
 
-        let _guard = self.ringbuf.metadata().spinlock.lock();
+        let _guard = self
+            .ringbuf
+            .metadata()
+            .spinlock
+            .try_lock()
+            .ok_or(MpscBufError::LockTimeout)?;
 
         let producer_pos = self.ringbuf.producer_pos();
         let new_prod_pos = producer_pos + total_size as u64;
@@ -191,7 +196,7 @@ impl<'a> Drop for ReservedBuffer<'a> {
                     .ringbuf
                     .metadata()
                     .consumer_waiting
-                    .load(Ordering::Relaxed)
+                    .load(Ordering::Acquire)
                 {
                     let _ = self.notification.notify();
                 }

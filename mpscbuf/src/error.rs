@@ -31,4 +31,7 @@ pub enum MpscBufError {
 
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("failed to acquire spinlock within timeout")]
+    LockTimeout,
 }
