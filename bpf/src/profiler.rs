@@ -1,28 +1,21 @@
 use crate::{perf_event, BpfError, Filterable};
-use blazesym::{
-    symbolize::{
-        source::{Process, Source},
-        Input, Symbolizer,
-    },
-    Pid,
-};
+use blazesym::symbolize::Symbolizer;
+use interned_symbolizer::{ProcessConfig, Symbolizer as InternedSymbolizer};
 use libbpf_rs::{
     libbpf_sys,
     skel::{OpenSkel, SkelBuilder},
     MapCore, RingBuffer, RingBufferBuilder,
 };
-use protocol::{Callstack, CpuMode, Event, Frame, InternedData, InternedString, Sample};
+use protocol::{CpuMode, Event, Sample};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::time::Duration;
-use std::{borrow::Cow, marker::PhantomData};
 use std::{
     convert::TryFrom,
     os::fd::{AsFd, AsRawFd, RawFd},
 };
-use tracing::{debug, warn};
+use tracing::warn;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfilerConfig {
@@ -113,43 +106,6 @@ impl Object {
     }
 }
 
-struct Callstacks {
-    mapping: HashMap<(i32, u64), u64>,
-    sequence: u64,
-}
-
-impl Callstacks {
-    fn new() -> Self {
-        Callstacks {
-            mapping: HashMap::new(),
-            sequence: 0,
-        }
-    }
-
-    fn compute_hash(pid: i32, ustack: &[u64], kstack: &[u64]) -> u64 {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        pid.hash(&mut hasher);
-        ustack.hash(&mut hasher);
-        kstack.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    fn get(&self, pid: i32, ustack: &[u64], kstack: &[u64]) -> Option<u64> {
-        let hash = Self::compute_hash(pid, ustack, kstack);
-        let key = (pid, hash);
-        self.mapping.get(&key).copied()
-    }
-
-    fn insert(&mut self, pid: i32, ustack: &[u64], kstack: &[u64]) -> u64 {
-        let hash = Self::compute_hash(pid, ustack, kstack);
-        let key = (pid, hash);
-        let id = self.sequence;
-        self.mapping.insert(key, id);
-        self.sequence += 1;
-        id
-    }
-}
-
 pub struct Profiler<'obj, F> {
     _skel: ProfilerSkel<'obj>,
     rb: RingBuffer<'obj>,
@@ -219,14 +175,16 @@ where
 
         let links = perf_event::attach_perf_event(&pefds, &mut skel.progs.profiler_perf_event)
             .map_err(|e| BpfError::AttachError(format!("failed to attach perf event: {}", e)))?;
-        let mut callstacks = Callstacks::new();
+
+        let process_config = ProcessConfig {
+            debug_syms: config.debug_syms,
+            perf_map: config.perf_map,
+            map_files: config.map_files,
+        };
+        let mut interned_symbolizer = InternedSymbolizer::new(process_config);
 
         // NOTE find a way to handle it in a safer manner
         let stackmap_fd = skel.maps.stackmap.as_fd().as_raw_fd();
-
-        let debug_syms = config.debug_syms;
-        let perf_map = config.perf_map;
-        let map_files = config.map_files;
 
         let mut builder = RingBufferBuilder::new();
         builder
@@ -249,36 +207,20 @@ where
 
                 let pid = event.tgid as i32;
 
-                if let Some(callstack_iid) = callstacks.get(pid, &ustack_frames, &kstack_frames) {
-                    let sample = create_sample(event, callstack_iid);
-                    callback(Event::Sample(sample));
-                } else {
-                    let usyms = symbolize_user_stack(
-                        symbolizer,
-                        &ustack_frames,
-                        event.tgid,
-                        debug_syms,
-                        perf_map,
-                        map_files,
-                    );
-                    let ksyms = symbolize_kernel_stack(symbolizer, &kstack_frames);
+                let mut session = interned_symbolizer.session(symbolizer);
+                match session.symbolize(pid, &ustack_frames, &kstack_frames) {
+                    Ok(mut interned) => {
+                        let (callstack_iid, interned_data_opt) = interned.data();
 
-                    if !usyms.is_empty() || !ksyms.is_empty() {
-                        let mut intern_state = InternState::new();
-                        intern_state.process_symbols(&usyms, &ustack_frames);
-                        intern_state.process_symbols(&ksyms, &kstack_frames);
-
-                        if !intern_state.function_names.is_empty()
-                            || !intern_state.frames.is_empty()
-                        {
-                            let callstack_iid =
-                                callstacks.insert(pid, &ustack_frames, &kstack_frames);
-                            let interned_data = intern_state.build_interned_data(callstack_iid);
+                        if let Some(interned_data) = interned_data_opt {
                             callback(Event::InternedData(interned_data));
-
-                            let sample = create_sample(event, callstack_iid);
-                            callback(Event::Sample(sample));
                         }
+
+                        let sample = create_sample(event, callstack_iid);
+                        callback(Event::Sample(sample));
+                    }
+                    Err(err) => {
+                        warn!(err = %err, pid = %pid, "failed to symbolize stack");
                     }
                 }
                 0
@@ -351,55 +293,6 @@ fn get_stack_frames_by_fd(stackmap_fd: RawFd, stack_id: i32) -> Vec<u64> {
     }
 }
 
-fn symbolize_user_stack<'a>(
-    symbolizer: &'a Symbolizer,
-    stack_frames: &[u64],
-    pid: u32,
-    debug_syms: bool,
-    perf_map: bool,
-    map_files: bool,
-) -> Vec<blazesym::symbolize::Symbolized<'a>> {
-    if stack_frames.is_empty() {
-        return vec![];
-    }
-    debug!(pid, map_files, "symbolizing");
-    let rst = symbolizer.symbolize(
-        &Source::Process(Process {
-            pid: Pid::from(pid),
-            debug_syms,
-            perf_map,
-            map_files,
-            _non_exhaustive: (),
-        }),
-        Input::AbsAddr(stack_frames),
-    );
-    if let Err(err) = &rst {
-        warn!(err = %err, pid = %pid, "failed to symbolize")
-    }
-    rst.unwrap_or_default()
-}
-
-fn symbolize_kernel_stack<'a>(
-    symbolizer: &'a Symbolizer,
-    stack_frames: &[u64],
-) -> Vec<blazesym::symbolize::Symbolized<'a>> {
-    if stack_frames.is_empty() {
-        return vec![];
-    }
-
-    let rst =
-        symbolizer.symbolize(
-            &blazesym::symbolize::source::Source::Kernel(
-                blazesym::symbolize::source::Kernel::default(),
-            ),
-            Input::AbsAddr(stack_frames),
-        );
-    if let Err(err) = &rst {
-        warn!(err = %err, "failed to symbolize kernel")
-    }
-    rst.unwrap_or_default()
-}
-
 fn create_sample(event: &PerfEvent, callstack_iid: u64) -> Sample {
     Sample {
         cpu: event.cpu_id,
@@ -408,84 +301,6 @@ fn create_sample(event: &PerfEvent, callstack_iid: u64) -> Sample {
         timestamp: event.timestamp,
         callstack_iid,
         cpu_mode: CpuMode::Unknown,
-    }
-}
-
-struct InternState<'a> {
-    string_id_counter: u64,
-    frame_id_counter: u64,
-    function_names: Vec<InternedString<'a>>,
-    frames: Vec<Frame>,
-    frame_ids: Vec<u64>,
-}
-
-impl<'a> InternState<'a> {
-    fn new() -> Self {
-        let state: InternState<'a> = Self {
-            string_id_counter: 0,
-            frame_id_counter: 0,
-            function_names: Vec::new(),
-            frames: Vec::new(),
-            frame_ids: Vec::new(),
-        };
-        state
-    }
-
-    fn add_symbol(&mut self, sym: &'a blazesym::symbolize::Sym, addr: u64) {
-        let name = sym.name.as_ref();
-        self.function_names.push(InternedString {
-            iid: self.string_id_counter,
-            str: Cow::Borrowed(name),
-        });
-
-        self.frames.push(Frame {
-            iid: self.frame_id_counter,
-            function_name_id: self.string_id_counter,
-            mapping_id: 1,
-            rel_pc: addr,
-        });
-
-        self.frame_ids.push(self.frame_id_counter);
-        self.string_id_counter += 1;
-        self.frame_id_counter += 1;
-    }
-
-    fn process_symbols(&mut self, syms: &'a [blazesym::symbolize::Symbolized], addrs: &[u64]) {
-        for (sym, &addr) in syms.iter().zip(addrs.iter()).rev() {
-            if let Some(sym) = sym.as_sym() {
-                self.add_symbol(sym, addr);
-            }
-        }
-    }
-
-    fn build_interned_data(self, callstack_iid: u64) -> InternedData<'a> {
-        let mappings = vec![protocol::Mapping {
-            iid: 1,
-            build_id: 1,
-            exact_offset: 0,
-            start_offset: 0,
-            start: 0,
-            end: 0x7fffffffffffffff,
-            load_bias: 0,
-            path_string_ids: vec![],
-        }];
-
-        let build_ids = vec![InternedString {
-            iid: 1,
-            str: Cow::Borrowed("unknown"),
-        }];
-
-        InternedData {
-            function_names: self.function_names,
-            frames: self.frames,
-            callstacks: vec![Callstack {
-                iid: callstack_iid,
-                frame_ids: self.frame_ids,
-            }],
-            mappings,
-            build_ids,
-            continuation: false,
-        }
     }
 }
 

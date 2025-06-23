@@ -24,6 +24,7 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 protocol = { path = "../protocol" }
+interned-symbolizer = { path = "../interned-symbolizer" }
 
 [dev-dependencies]
 ctrlc = { workspace = true }

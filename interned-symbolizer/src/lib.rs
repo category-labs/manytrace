@@ -67,8 +67,8 @@ impl InternedCache {
             })
     }
 
-    pub fn reserve_callstack(&mut self, callstack: Vec<u64>) -> u64 {
-        let hash = Self::hash_callstack(&callstack);
+    pub fn reserve_callstack(&mut self, callstack: &[u64]) -> u64 {
+        let hash = Self::hash_callstack(callstack);
         *self
             .callstack_hash_to_sequence
             .entry(hash)
@@ -264,7 +264,7 @@ impl<'a> Interned<'a> {
             }
         }
 
-        let callstack_id = self.cache.reserve_callstack(all_frame_ids.clone());
+        let callstack_id = self.cache.reserve_callstack(&all_frame_ids);
 
         let data =
             if !new_function_names.is_empty() || !new_frames.is_empty() || !new_mappings.is_empty()
@@ -335,7 +335,7 @@ impl<'a> Session<'a> {
             kernel_addresses,
             user_symbols,
             kernel_symbols,
-            cache: &mut self.cache,
+            cache: self.cache,
         })
     }
 }
@@ -372,16 +372,16 @@ mod tests {
         let callstack1 = vec![1, 2, 3];
         assert_eq!(cache.cached_callstack(1234, &callstack1), None);
 
-        let id1 = cache.reserve_callstack(callstack1.clone());
+        let id1 = cache.reserve_callstack(&callstack1);
         assert_eq!(id1, 0);
 
         assert_eq!(cache.cached_callstack(1234, &callstack1), Some(0));
 
-        let id2 = cache.reserve_callstack(callstack1.clone());
+        let id2 = cache.reserve_callstack(&callstack1);
         assert_eq!(id2, 0);
 
         let callstack2 = vec![4, 5, 6];
-        let id3 = cache.reserve_callstack(callstack2.clone());
+        let id3 = cache.reserve_callstack(&callstack2);
         assert_eq!(id3, 1);
 
         assert_eq!(cache.cached_callstack(5678, &callstack2), Some(1));
@@ -395,9 +395,9 @@ mod tests {
         let callstack2 = vec![1, 2, 3];
         let callstack3 = vec![3, 2, 1];
 
-        let id1 = cache.reserve_callstack(callstack1.clone());
-        let id2 = cache.reserve_callstack(callstack2.clone());
-        let id3 = cache.reserve_callstack(callstack3.clone());
+        let id1 = cache.reserve_callstack(&callstack1);
+        let id2 = cache.reserve_callstack(&callstack2);
+        let id3 = cache.reserve_callstack(&callstack3);
 
         assert_eq!(id1, id2);
         assert_ne!(id1, id3);

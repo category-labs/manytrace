@@ -214,6 +214,7 @@ dependencies = [
  "bytemuck",
  "ctrlc",
  "eyre",
+ "interned-symbolizer",
  "libbpf-cargo",
  "libbpf-rs",
  "libbpf-sys",
