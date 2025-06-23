@@ -1,0 +1,12 @@
+[package]
+name = "interned-symbolizer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+protocol = { path = "../protocol" }
+blazesym = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rstest = "0.23"
