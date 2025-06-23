@@ -2,8 +2,8 @@
 
 [bpf.profiler]
 sample_freq = 999
-# kernel_samples = true
-# user_samples = true
+kernel_samples = true
+user_samples = true
 filter_process = ["continuous", "manytrace"]
 # Symbolization options (all default to true)
 # debug_syms = true     # Enable debug symbol resolution

@@ -210,8 +210,12 @@ impl<'a> Interned<'a> {
             });
         }
 
-        for (i, sym) in self.user_symbols.iter().enumerate() {
-            let addr = self.user_addresses[i];
+        for (sym, &addr) in self
+            .user_symbols
+            .iter()
+            .zip(self.user_addresses.iter())
+            .rev()
+        {
             let is_new_frame = self.cache.cached_frame(self.pid, addr).is_none();
             let frame_id = self.cache.reserve_frame(self.pid, addr);
             all_frame_ids.push(frame_id);
@@ -237,10 +241,9 @@ impl<'a> Interned<'a> {
             }
         }
 
-        for (i, sym) in self.kernel_symbols.iter().enumerate() {
-            let addr = self.kernel_addresses[i];
-            let is_new_frame = self.cache.cached_frame(self.pid, addr).is_none();
-            let frame_id = self.cache.reserve_frame(self.pid, addr);
+        for (sym, &addr) in self.kernel_symbols.iter().zip(self.kernel_addresses.iter()) {
+            let is_new_frame = self.cache.cached_frame(-1, addr).is_none();
+            let frame_id = self.cache.reserve_frame(-1, addr);
             all_frame_ids.push(frame_id);
 
             if is_new_frame {
@@ -263,28 +266,33 @@ impl<'a> Interned<'a> {
                 });
             }
         }
-
+        let new_callstack = self
+            .cache
+            .cached_callstack(self.pid, &all_frame_ids)
+            .is_none();
         let callstack_id = self.cache.reserve_callstack(&all_frame_ids);
 
-        let data =
-            if !new_function_names.is_empty() || !new_frames.is_empty() || !new_mappings.is_empty()
-            {
-                let continuation = !self.cache.take_is_first_interned_data();
-                let interned_data = InternedData {
-                    function_names: new_function_names,
-                    frames: new_frames,
-                    callstacks: vec![Callstack {
-                        iid: callstack_id,
-                        frame_ids: all_frame_ids.clone(),
-                    }],
-                    mappings: new_mappings,
-                    build_ids: new_build_ids,
-                    continuation,
-                };
-                Some(interned_data)
-            } else {
-                None
+        let data = if new_callstack
+            || !new_function_names.is_empty()
+            || !new_frames.is_empty()
+            || !new_mappings.is_empty()
+        {
+            let continuation = !self.cache.take_is_first_interned_data();
+            let interned_data = InternedData {
+                function_names: new_function_names,
+                frames: new_frames,
+                callstacks: vec![Callstack {
+                    iid: callstack_id,
+                    frame_ids: all_frame_ids.clone(),
+                }],
+                mappings: new_mappings,
+                build_ids: new_build_ids,
+                continuation,
             };
+            Some(interned_data)
+        } else {
+            None
+        };
         (callstack_id, data)
     }
 }
@@ -328,6 +336,9 @@ impl<'a> Session<'a> {
         } else {
             vec![]
         };
+        if user_symbols.is_empty() && kernel_symbols.is_empty() {
+            return Err(SymbolizerError::EmptySymbols);
+        }
 
         Ok(Interned {
             pid,
