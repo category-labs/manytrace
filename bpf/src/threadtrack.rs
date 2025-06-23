@@ -7,7 +7,7 @@ use threadtrack_skel::*;
 use crate::BpfError;
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::{OpenObject, RingBufferBuilder};
-use protocol::{Event, ProcessName, ThreadName};
+use protocol::{Event, Message, ProcessName, ThreadName};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::convert::TryFrom;
@@ -80,7 +80,7 @@ impl Object {
 
     pub fn build<'bd, F>(&'bd mut self, callback: F) -> Result<ThreadTracker<'bd, F>, BpfError>
     where
-        F: for<'a> FnMut(Event<'a>) + 'bd,
+        F: for<'a> FnMut(Message<'a>) + 'bd,
     {
         ThreadTracker::new(&mut self.object, callback)
     }
@@ -95,7 +95,7 @@ pub struct ThreadTracker<'this, F> {
 
 impl<'this, F> ThreadTracker<'this, F>
 where
-    F: for<'a> FnMut(Event<'a>) + 'this,
+    F: for<'a> FnMut(Message<'a>) + 'this,
 {
     fn new(open_object: &'this mut MaybeUninit<OpenObject>, callback: F) -> Result<Self, BpfError> {
         let skel_builder = ThreadtrackSkelBuilder::default();
@@ -118,20 +118,20 @@ where
         builder
             .add(&skel.maps.events, move |data| {
                 let thread_event: &ThreadEvent = data.try_into().unwrap();
-                let event = if !thread_event.filename_str().is_empty() {
-                    Event::ProcessName(ProcessName {
+                let message = if !thread_event.filename_str().is_empty() {
+                    Message::Event(Event::ProcessName(ProcessName {
                         name: thread_event.filename_str(),
                         pid: thread_event.tgid as i32,
-                    })
+                    }))
                 } else {
-                    Event::ThreadName(ThreadName {
+                    Message::Event(Event::ThreadName(ThreadName {
                         name: thread_event.comm_str(),
                         tid: thread_event.pid as i32,
                         pid: thread_event.tgid as i32,
-                    })
+                    }))
                 };
 
-                callback_clone.borrow_mut()(event);
+                callback_clone.borrow_mut()(message);
                 0
             })
             .map_err(|e| BpfError::MapError(format!("failed to add ring buffer: {}", e)))?;
@@ -176,10 +176,10 @@ where
             if let Ok(comm) = fs::read_to_string(&comm_path) {
                 let process_name = comm.trim().to_string();
 
-                self.callback.borrow_mut()(Event::ProcessName(ProcessName {
+                self.callback.borrow_mut()(Message::Event(Event::ProcessName(ProcessName {
                     name: process_name.as_str(),
                     pid,
-                }));
+                })));
             }
 
             let task_dir = path.join("task");
@@ -209,11 +209,11 @@ where
                     if let Ok(comm) = fs::read_to_string(&thread_comm_path) {
                         let thread_name = comm.trim().to_string();
 
-                        self.callback.borrow_mut()(Event::ThreadName(ThreadName {
+                        self.callback.borrow_mut()(Message::Event(Event::ThreadName(ThreadName {
                             name: thread_name.as_str(),
                             tid,
                             pid,
-                        }));
+                        })));
                     }
                 }
             }
@@ -283,7 +283,11 @@ mod root_tests {
 
         let mut object = Object::new();
         let mut tracker = object
-            .build(move |event| {
+            .build(move |message| {
+                let event = match message {
+                    Message::Event(e) => e,
+                    _ => return,
+                };
                 let test_event = match event {
                     Event::ProcessName(p) => TestEvent::ProcessName {
                         name: p.name.to_string(),

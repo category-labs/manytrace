@@ -1,9 +1,6 @@
 use crate::label_iter::LabelIterator;
-use perfetto_format::{
-    create_debug_annotation, perfetto::profiling::CpuMode as PerfettoCpuMode, DebugAnnotation,
-    DebugValue, PerfettoStreamWriter,
-};
-use protocol::{ArchivedEvent, CpuMode, Event, InternedDataIterable};
+use perfetto_format::{create_debug_annotation, DebugAnnotation, DebugValue, PerfettoStreamWriter};
+use protocol::{ArchivedEvent, Event, InternedDataIterable};
 use std::collections::HashMap;
 use std::io::Write;
 
@@ -102,8 +99,9 @@ impl<W: Write> PerfettoConverter<W> {
     fn convert_interned_data<'a>(
         &mut self,
         data: &'a impl InternedDataIterable<'a>,
+        stream_id: Option<protocol::StreamId>,
     ) -> eyre::Result<()> {
-        self.writer.write_protocol_interned_data(data)?;
+        self.writer.write_protocol_interned_data(data, stream_id)?;
         Ok(())
     }
 
@@ -187,23 +185,29 @@ impl<W: Write> PerfettoConverter<W> {
         Ok(())
     }
 
-    pub fn convert_event(&mut self, event: &Event) -> eyre::Result<()> {
-        match event {
-            Event::InternedData(data) => self.convert_interned_data(data)?,
-            Event::Sample(sample) => {
-                let cpu_mode = match sample.cpu_mode {
-                    CpuMode::User => PerfettoCpuMode::ModeUser,
-                    CpuMode::Kernel => PerfettoCpuMode::ModeKernel,
-                    _ => PerfettoCpuMode::ModeUnknown,
-                };
+    pub fn convert_message(&mut self, message: &protocol::Message) -> eyre::Result<()> {
+        let (event, stream_id) = match message {
+            protocol::Message::Event(e) => (e, None),
+            protocol::Message::Stream { stream_id, event } => (event, Some(*stream_id)),
+        };
+        self.convert_event(event, stream_id)
+    }
 
+    fn convert_event(
+        &mut self,
+        event: &Event,
+        stream_id: Option<protocol::StreamId>,
+    ) -> eyre::Result<()> {
+        match event {
+            Event::InternedData(data) => self.convert_interned_data(data, stream_id)?,
+            Event::Sample(sample) => {
                 self.writer.write_perf_sample(
                     sample.cpu,
                     sample.pid as u32,
                     sample.tid as u32,
                     sample.timestamp,
                     sample.callstack_iid,
-                    cpu_mode,
+                    stream_id,
                 )?;
             }
             Event::Counter(counter) => self.convert_counter(
@@ -239,23 +243,34 @@ impl<W: Write> PerfettoConverter<W> {
         Ok(())
     }
 
-    pub fn convert_archived_event<'a>(&mut self, event: &'a ArchivedEvent<'a>) -> eyre::Result<()> {
-        match event {
-            ArchivedEvent::InternedData(data) => self.convert_interned_data(data)?,
-            ArchivedEvent::Sample(sample) => {
-                let cpu_mode = match sample.cpu_mode {
-                    protocol::ArchivedCpuMode::User => PerfettoCpuMode::ModeUser,
-                    protocol::ArchivedCpuMode::Kernel => PerfettoCpuMode::ModeKernel,
-                    _ => PerfettoCpuMode::ModeUnknown,
-                };
+    pub fn convert_archived_message<'a>(
+        &mut self,
+        message: &'a protocol::ArchivedMessage<'a>,
+    ) -> eyre::Result<()> {
+        let (event, stream_id) = match message {
+            protocol::ArchivedMessage::Event(e) => (e, None),
+            protocol::ArchivedMessage::Stream { stream_id, event } => {
+                (event, Some(stream_id.to_native()))
+            }
+        };
+        self.convert_archived_event(event, stream_id)
+    }
 
+    pub fn convert_archived_event<'a>(
+        &mut self,
+        event: &'a ArchivedEvent<'a>,
+        stream_id: Option<protocol::StreamId>,
+    ) -> eyre::Result<()> {
+        match event {
+            ArchivedEvent::InternedData(data) => self.convert_interned_data(data, stream_id)?,
+            ArchivedEvent::Sample(sample) => {
                 self.writer.write_perf_sample(
                     sample.cpu.to_native(),
                     sample.pid.to_native() as u32,
                     sample.tid.to_native() as u32,
                     sample.timestamp.to_native(),
                     sample.callstack_iid.to_native(),
-                    cpu_mode,
+                    stream_id,
                 )?;
             }
             ArchivedEvent::Counter(counter) => self.convert_counter(

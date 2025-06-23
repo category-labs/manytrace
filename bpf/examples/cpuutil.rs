@@ -1,5 +1,5 @@
 use bpf::{cpuutil, CpuUtilConfig};
-use protocol::Event;
+use protocol::{Event, Message};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::sleep;
@@ -25,8 +25,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pid_filters: vec![std::process::id()],
         filter_process: vec![],
     });
-    let mut tracker = builder.build(|event: Event| {
-        if let Event::Counter(counter) = event {
+    let mut tracker = builder.build(|message: Message| {
+        if let Message::Event(Event::Counter(counter)) = message {
             match counter.name {
                 "cpu_time_ns" => {
                     println!(

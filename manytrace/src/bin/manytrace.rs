@@ -3,7 +3,6 @@ use clap::Parser;
 use eyre::{Context, Result};
 use manytrace::config::Config;
 use manytrace::converter::PerfettoConverter;
-use protocol::Event;
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::BufWriter;
@@ -61,13 +60,14 @@ fn main() -> Result<()> {
     let mut bpf_object = config.bpf.build()?;
     let callback = {
         let converter = converter.clone();
-        move |event: Event| {
-            if let Err(e) = converter.borrow_mut().convert_event(&event) {
+        move |message: bpf::BpfMessage| {
+            if let Err(e) = converter.borrow_mut().convert_message(&message) {
                 tracing::warn!(error = %e, "failed to convert bpf event");
             }
         }
     };
-    let mut bpf_consumer = bpf_object.consumer(callback)?;
+    let mut stream_allocator = protocol::StreamIdAllocator::new();
+    let mut bpf_consumer = bpf_object.consumer(callback, &mut stream_allocator)?;
 
     let mut user_consumer = if !config.user.is_empty() {
         Some(Consumer::new(config.global.buffer_size)?)
@@ -115,7 +115,7 @@ fn main() -> Result<()> {
             while let Some(record) = consumer.consume() {
                 match record.as_event() {
                     Ok(event) => {
-                        if let Err(e) = converter.borrow_mut().convert_archived_event(event) {
+                        if let Err(e) = converter.borrow_mut().convert_archived_event(event, None) {
                             tracing::warn!(error = %e, "failed to convert user event");
                         }
                     }

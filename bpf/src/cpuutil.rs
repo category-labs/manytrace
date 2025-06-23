@@ -8,7 +8,7 @@ use crate::{perf_event, BpfError, Filterable};
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::{MapCore, MapFlags, OpenObject, RingBufferBuilder};
 use libbpf_sys::{PERF_COUNT_SW_CPU_CLOCK, PERF_TYPE_SOFTWARE};
-use protocol::{Counter, Event, Labels};
+use protocol::{Counter, Event, Labels, Message};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -47,7 +47,7 @@ impl Object {
 
     pub fn build<'bd, F>(&'bd mut self, callback: F) -> Result<CpuUtil<'bd, F>, BpfError>
     where
-        F: for<'a> FnMut(Event<'a>) + 'bd,
+        F: for<'a> FnMut(Message<'a>) + 'bd,
     {
         let util = CpuUtil::new(
             &mut self.object,
@@ -107,7 +107,7 @@ pub struct CpuUtil<'this, F> {
 
 impl<'this, F> CpuUtil<'this, F>
 where
-    F: for<'a> FnMut(Event<'a>) + 'this,
+    F: for<'a> FnMut(Message<'a>) + 'this,
 {
     fn new(
         open_object: &'this mut MaybeUninit<OpenObject>,
@@ -180,7 +180,7 @@ where
                                 elapsed_ns = elapsed_ns as u64,
                                 "emitting cpu_time counter"
                             );
-                            let cpu_counter = Event::Counter(Counter {
+                            let cpu_counter = Message::Event(Event::Counter(Counter {
                                 name: "cpu_time",
                                 value: cpu_percent,
                                 timestamp: thread_stats.min_timestamp,
@@ -188,7 +188,7 @@ where
                                 pid: *pid,
                                 labels: Cow::Owned(Labels::new()),
                                 unit: Some("%"),
-                            });
+                            }));
                             callback(cpu_counter);
 
                             let kernel_percent =
@@ -201,7 +201,7 @@ where
                                 elapsed_ns = elapsed_ns as u64,
                                 "emitting kernel_time counter"
                             );
-                            let kernel_counter = Event::Counter(Counter {
+                            let kernel_counter = Message::Event(Event::Counter(Counter {
                                 name: "kernel_time",
                                 value: kernel_percent,
                                 timestamp: thread_stats.min_timestamp,
@@ -209,7 +209,7 @@ where
                                 pid: *pid,
                                 labels: Cow::Owned(Labels::new()),
                                 unit: Some("%"),
-                            });
+                            }));
                             callback(kernel_counter);
                             thread_stats.cpu_time_ns = 0;
                             thread_stats.kernel_time_ns = 0;
@@ -276,7 +276,7 @@ where
 
 impl<'this, F> Filterable for CpuUtil<'this, F>
 where
-    F: for<'a> FnMut(Event<'a>) + 'this,
+    F: for<'a> FnMut(Message<'a>) + 'this,
 {
     fn filter(&mut self, pid: i32) -> Result<(), BpfError> {
         self.add_pid_filter(pid as u32)
@@ -336,8 +336,8 @@ mod root_tests {
 
         let mut object = Object::new(config);
         let mut cpuutil = object
-            .build(move |event| {
-                if let Event::Counter(c) = event {
+            .build(move |message| {
+                if let Message::Event(Event::Counter(c)) = message {
                     let test_counter = TestCounter {
                         name: c.name.to_string(),
                         value: c.value,
@@ -405,8 +405,8 @@ mod root_tests {
 
         let mut object = Object::new(config);
         let mut cpuutil = object
-            .build(move |event| {
-                if let Event::Counter(c) = event {
+            .build(move |message| {
+                if let Message::Event(Event::Counter(c)) = message {
                     let test_counter = TestCounter {
                         name: c.name.to_string(),
                         value: c.value,

@@ -1,9 +1,11 @@
 use blazesym::symbolize::Symbolizer;
-use protocol::Event;
+use protocol::{Message, StreamId, StreamIdAllocator};
 use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, collections::HashSet, path::Path, rc::Rc};
 use thiserror::Error;
 use tracing::debug;
+
+pub use protocol::Message as BpfMessage;
 
 pub mod cpuutil;
 mod perf_event;
@@ -154,19 +156,24 @@ pub struct BpfObject {
 }
 
 impl BpfObject {
-    pub fn consumer<'this, F>(&'this mut self, callback: F) -> Result<BpfConsumer<'this>, BpfError>
+    pub fn consumer<'this, F>(
+        &'this mut self,
+        callback: F,
+        stream_allocator: &mut StreamIdAllocator,
+    ) -> Result<BpfConsumer<'this>, BpfError>
     where
-        F: for<'a> FnMut(Event<'a>) + Clone + 'this,
+        F: for<'a> FnMut(Message<'a>) + Clone + 'this,
     {
         let cpuutil = if let Some(ref mut obj) = self.cpuutils {
-            Some(obj.build(Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Event<'a>)>)?)
+            Some(obj.build(Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>)>)?)
         } else {
             None
         };
 
         let profiler = if let Some(ref mut obj) = self.profiler {
-            let callback = Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Event<'a>)>;
-            Some(obj.build(callback, &self.symbolizer)?)
+            let callback = Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>)>;
+            let stream_id = stream_allocator.allocate();
+            Some(obj.build(callback, &self.symbolizer, stream_id)?)
         } else {
             None
         };
@@ -185,8 +192,8 @@ impl BpfObject {
                 let cpuutil_ref = cpuutil_rc.clone();
                 let profiler_ref = profiler_rc.clone();
 
-                let wrapper_callback = move |event: Event<'_>| {
-                    if let Event::ProcessName(ref pn) = event {
+                let wrapper_callback = move |message: Message<'_>| {
+                    if let Message::Event(protocol::Event::ProcessName(ref pn)) = message {
                         let pid = pn.pid;
                         let name = pn.name;
 
@@ -216,13 +223,13 @@ impl BpfObject {
                         }
                     }
 
-                    user_callback(event);
+                    user_callback(message);
                 };
 
-                let callback = Box::new(wrapper_callback) as Box<dyn for<'a> FnMut(Event<'a>)>;
+                let callback = Box::new(wrapper_callback) as Box<dyn for<'a> FnMut(Message<'a>)>;
                 Some(obj.build(callback)?)
             } else {
-                let callback = Box::new(callback) as Box<dyn for<'a> FnMut(Event<'a>)>;
+                let callback = Box::new(callback) as Box<dyn for<'a> FnMut(Message<'a>)>;
                 Some(obj.build(callback)?)
             }
         } else {
@@ -237,7 +244,7 @@ impl BpfObject {
     }
 }
 
-type Callback<'cb> = Box<dyn for<'a> FnMut(Event<'a>) + 'cb>;
+type Callback<'cb> = Box<dyn for<'a> FnMut(Message<'a>) + 'cb>;
 
 pub struct BpfConsumer<'this> {
     threadtrack: Option<threadtrack::ThreadTracker<'this, Callback<'this>>>,

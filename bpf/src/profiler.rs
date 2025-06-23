@@ -6,7 +6,7 @@ use libbpf_rs::{
     skel::{OpenSkel, SkelBuilder},
     MapCore, RingBuffer, RingBufferBuilder,
 };
-use protocol::{CpuMode, Event, Sample};
+use protocol::{CpuMode, Event, Message, Sample};
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
@@ -98,11 +98,18 @@ impl Object {
         &'obj mut self,
         callback: F,
         symbolizer: &'obj Symbolizer,
+        stream_id: crate::StreamId,
     ) -> Result<Profiler<'obj, F>, BpfError>
     where
-        F: for<'a> FnMut(Event<'a>) + 'obj,
+        F: for<'a> FnMut(Message<'a>) + 'obj,
     {
-        Profiler::new(&mut self.object, callback, self.config.clone(), symbolizer)
+        Profiler::new(
+            &mut self.object,
+            callback,
+            self.config.clone(),
+            symbolizer,
+            stream_id,
+        )
     }
 }
 
@@ -115,13 +122,14 @@ pub struct Profiler<'obj, F> {
 
 impl<'obj, F> Profiler<'obj, F>
 where
-    F: for<'a> FnMut(Event<'a>) + 'obj,
+    F: for<'a> FnMut(Message<'a>) + 'obj,
 {
     fn new(
         open_object: &'obj mut MaybeUninit<libbpf_rs::OpenObject>,
         mut callback: F,
         config: ProfilerConfig,
         symbolizer: &'obj Symbolizer,
+        stream_id: crate::StreamId,
     ) -> Result<Self, BpfError> {
         let skel_builder = ProfilerSkelBuilder::default();
         let mut open_skel = skel_builder
@@ -213,11 +221,17 @@ where
                         let (callstack_iid, interned_data_opt) = interned.data();
 
                         if let Some(interned_data) = interned_data_opt {
-                            callback(Event::InternedData(interned_data));
+                            callback(Message::Stream {
+                                stream_id,
+                                event: Event::InternedData(interned_data),
+                            });
                         }
 
                         let sample = create_sample(event, callstack_iid);
-                        callback(Event::Sample(sample));
+                        callback(Message::Stream {
+                            stream_id,
+                            event: Event::Sample(sample),
+                        });
                     }
                     Err(err) => {
                         warn!(err = %err, pid = %pid, "failed to symbolize stack");
@@ -259,7 +273,7 @@ where
 
 impl<'obj, F> Filterable for Profiler<'obj, F>
 where
-    F: for<'a> FnMut(Event<'a>) + 'obj,
+    F: for<'a> FnMut(Message<'a>) + 'obj,
 {
     fn filter(&mut self, pid: i32) -> Result<(), BpfError> {
         let key = pid.to_ne_bytes();
@@ -350,21 +364,28 @@ mod root_tests {
         let mut object = Object::new(config);
         let mut profiler = object
             .build(
-                move |event| match &event {
-                    Event::Sample(sample) => {
-                        *sample_count_ref += 1;
-                        thread_ids_ref.insert(sample.tid);
-                    }
-                    Event::InternedData(data) => {
-                        *interned_data_count_ref += 1;
-                        for func in &data.function_names {
-                            let name = func.str.to_string();
-                            function_names_ref.push(name.clone());
+                move |message| {
+                    let event = match &message {
+                        Message::Stream { event, .. } => event,
+                        Message::Event(e) => e,
+                    };
+                    match event {
+                        Event::Sample(sample) => {
+                            *sample_count_ref += 1;
+                            thread_ids_ref.insert(sample.tid);
                         }
+                        Event::InternedData(data) => {
+                            *interned_data_count_ref += 1;
+                            for func in &data.function_names {
+                                let name = func.str.to_string();
+                                function_names_ref.push(name.clone());
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 },
                 &symbolizer,
+                0,
             )
             .expect("failed to create profiler");
 

@@ -10,6 +10,30 @@ use rkyv::ser::{Positional, Writer};
 use rkyv::with::{AsOwned, Identity, InlineAsBox, Map, MapKV};
 use rkyv::{Archive, Archived, Deserialize, Serialize};
 
+pub type StreamId = u16;
+
+pub struct StreamIdAllocator {
+    next_id: StreamId,
+}
+
+impl StreamIdAllocator {
+    pub fn new() -> Self {
+        Self { next_id: 0 }
+    }
+
+    pub fn allocate(&mut self) -> StreamId {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        id
+    }
+}
+
+impl Default for StreamIdAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Archive, Deserialize, Serialize, Clone)]
 pub struct Labels<'a> {
     #[rkyv(with = MapKV<InlineAsBox, AsOwned>)]
@@ -191,6 +215,15 @@ pub enum Event<'a> {
     ProcessName(ProcessName<'a>),
     InternedData(InternedData<'a>),
     Sample(Sample),
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+pub enum Message<'a> {
+    Event(Event<'a>),
+    Stream {
+        stream_id: StreamId,
+        event: Event<'a>,
+    },
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]

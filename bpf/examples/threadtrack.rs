@@ -1,5 +1,5 @@
 use bpf::threadtrack;
-use protocol::Event;
+use protocol::{Event, Message};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,20 +17,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{:-<80}", "");
 
     let mut builder = threadtrack::Object::new();
-    let mut tracker = builder.build(|event: Event| match event {
-        Event::ThreadName(thread) => {
-            println!(
-                "{:<8} {:<8} {:<64} {:<40}",
-                thread.pid, thread.tid, thread.name, "Thread"
-            );
+    let mut tracker = builder.build(|message: Message| {
+        let event = match message {
+            Message::Event(e) => e,
+            _ => return,
+        };
+        match event {
+            Event::ThreadName(thread) => {
+                println!(
+                    "{:<8} {:<8} {:<64} {:<40}",
+                    thread.pid, thread.tid, thread.name, "Thread"
+                );
+            }
+            Event::ProcessName(process) => {
+                println!(
+                    "{:<8} {:<8} {:<64} {:<40}",
+                    process.pid, "-", process.name, "Process"
+                );
+            }
+            _ => {}
         }
-        Event::ProcessName(process) => {
-            println!(
-                "{:<8} {:<8} {:<64} {:<40}",
-                process.pid, "-", process.name, "Process"
-            );
-        }
-        _ => {}
     })?;
 
     while running.load(Ordering::SeqCst) {

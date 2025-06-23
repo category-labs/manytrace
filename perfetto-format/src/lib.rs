@@ -15,7 +15,6 @@ pub use perfetto::*;
 
 pub struct PerfettoStreamWriter<W: Write> {
     writer: W,
-    sequence_id: u32,
     track_uuid_counter: u64,
 }
 
@@ -23,7 +22,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
     pub fn new(writer: W) -> Self {
         Self {
             writer,
-            sequence_id: 1,
             track_uuid_counter: 1000,
         }
     }
@@ -76,11 +74,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
 
         let packet = TracePacket {
             data: Some(trace_packet::Data::TrackDescriptor(track_desc)),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    self.sequence_id,
-                ),
-            ),
             ..Default::default()
         };
 
@@ -105,11 +98,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
         let packet = TracePacket {
             data: Some(trace_packet::Data::TrackEvent(event)),
             timestamp: Some(timestamp_ns),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    self.sequence_id,
-                ),
-            ),
             ..Default::default()
         };
         self.write_packet(packet)
@@ -129,11 +117,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
         let packet = TracePacket {
             data: Some(trace_packet::Data::TrackEvent(event)),
             timestamp: Some(timestamp_ns),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    self.sequence_id,
-                ),
-            ),
             ..Default::default()
         };
         self.write_packet(packet)
@@ -156,6 +139,7 @@ impl<W: Write> PerfettoStreamWriter<W> {
     pub fn write_protocol_interned_data<'a>(
         &mut self,
         data: &'a impl InternedDataIterable<'a>,
+        stream_id: Option<u16>,
     ) -> Result<(), std::io::Error> {
         let mut interned_data = InternedData::default();
 
@@ -203,9 +187,9 @@ impl<W: Write> PerfettoStreamWriter<W> {
         }
 
         if data.continuation() {
-            self.write_interned_data_next(interned_data)
+            self.write_interned_data_next(interned_data, stream_id)
         } else {
-            self.write_interned_data(interned_data)
+            self.write_interned_data(interned_data, stream_id)
         }
     }
 
@@ -229,11 +213,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
 
         let packet = TracePacket {
             data: Some(trace_packet::Data::TrackDescriptor(track_desc)),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    self.sequence_id,
-                ),
-            ),
             ..Default::default()
         };
 
@@ -244,34 +223,40 @@ impl<W: Write> PerfettoStreamWriter<W> {
     pub fn write_interned_data(
         &mut self,
         interned_data: InternedData,
+        stream_id: Option<u16>,
     ) -> Result<(), std::io::Error> {
-        let packet = TracePacket {
+        let mut packet = TracePacket {
             interned_data: Some(interned_data),
             sequence_flags: Some(trace_packet::SequenceFlags::SeqIncrementalStateCleared as u32),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    self.sequence_id,
-                ),
-            ),
             ..Default::default()
         };
+
+        if let Some(id) = stream_id {
+            packet.optional_trusted_packet_sequence_id = Some(
+                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(id as u32),
+            );
+        }
+
         self.write_packet(packet)
     }
 
     pub fn write_interned_data_next(
         &mut self,
         interned_data: InternedData,
+        stream_id: Option<u16>,
     ) -> Result<(), std::io::Error> {
-        let packet = TracePacket {
+        let mut packet = TracePacket {
             interned_data: Some(interned_data),
             sequence_flags: Some(trace_packet::SequenceFlags::SeqNeedsIncrementalState as u32),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    self.sequence_id,
-                ),
-            ),
             ..Default::default()
         };
+
+        if let Some(id) = stream_id {
+            packet.optional_trusted_packet_sequence_id = Some(
+                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(id as u32),
+            );
+        }
+
         self.write_packet(packet)
     }
 
@@ -293,11 +278,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
         let packet = TracePacket {
             data: Some(trace_packet::Data::TrackEvent(event)),
             timestamp: Some(timestamp_ns),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    self.sequence_id,
-                ),
-            ),
             ..Default::default()
         };
         self.write_packet(packet)
@@ -325,11 +305,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
 
         let packet = TracePacket {
             data: Some(trace_packet::Data::TrackDescriptor(track_desc)),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    self.sequence_id,
-                ),
-            ),
             ..Default::default()
         };
 
@@ -353,11 +328,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
         let packet = TracePacket {
             data: Some(trace_packet::Data::TrackEvent(event)),
             timestamp: Some(timestamp_ns),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    self.sequence_id,
-                ),
-            ),
             ..Default::default()
         };
 
@@ -380,11 +350,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
         let packet = TracePacket {
             data: Some(trace_packet::Data::TrackEvent(event)),
             timestamp: Some(timestamp_ns),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    self.sequence_id,
-                ),
-            ),
             ..Default::default()
         };
 
@@ -398,29 +363,30 @@ impl<W: Write> PerfettoStreamWriter<W> {
         tid: u32,
         timestamp_ns: u64,
         callstack_iid: u64,
-        cpu_mode: profiling::CpuMode,
+        stream_id: Option<u16>,
     ) -> Result<(), std::io::Error> {
         let sample = PerfSample {
             cpu: Some(cpu),
             pid: Some(pid),
             tid: Some(tid),
             callstack_iid: Some(callstack_iid),
-            cpu_mode: Some(cpu_mode as i32),
             timebase_count: Some(1),
             ..Default::default()
         };
 
-        let packet = TracePacket {
+        let mut packet = TracePacket {
             data: Some(trace_packet::Data::PerfSample(sample)),
             timestamp: Some(timestamp_ns),
             trusted_pid: Some(pid as i32),
-            optional_trusted_packet_sequence_id: Some(
-                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
-                    self.sequence_id,
-                ),
-            ),
             ..Default::default()
         };
+
+        if let Some(id) = stream_id {
+            packet.optional_trusted_packet_sequence_id = Some(
+                trace_packet::OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(id as u32),
+            );
+        }
+
         self.write_packet(packet)
     }
 }
