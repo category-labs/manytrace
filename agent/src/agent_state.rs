@@ -1,5 +1,6 @@
 use mpscbuf::{Producer as MpscProducer, WakeupStrategy};
-use protocol::{ArchivedTracingArgs, ControlMessage, TimestampType};
+use protocol::{ArchivedTracingArgs, ControlMessage};
+use rkyv::option::ArchivedOption;
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
@@ -152,27 +153,15 @@ impl AgentState {
 
                         let buffer_size = buffer_size.to_native() as usize;
 
-                        let _deserialized_args = match args {
-                            protocol::ArchivedArgs::Tracing(tracing_args) => {
-                                let timestamp_type_native = match tracing_args.timestamp_type {
-                                    protocol::ArchivedTimestampType::Monotonic => {
-                                        TimestampType::Monotonic
-                                    }
-                                    protocol::ArchivedTimestampType::Boottime => {
-                                        TimestampType::Boottime
-                                    }
-                                    protocol::ArchivedTimestampType::Realtime => {
-                                        TimestampType::Realtime
-                                    }
-                                };
-                                let log_filter = tracing_args.log_filter.as_str().to_string();
-
-                                Some(protocol::Args::Tracing(protocol::TracingArgs {
-                                    log_filter,
-                                    timestamp_type: timestamp_type_native,
-                                }))
-                            }
-                        };
+                        if matches!(&args.tracing, ArchivedOption::None) {
+                            actions.push_back(Action::SendMessage {
+                                client_id,
+                                message: ControlMessage::Nack {
+                                    error: "at least one arg must be non-empty".to_owned(),
+                                },
+                            });
+                            return;
+                        }
 
                         if raw_fds.len() < 2 {
                             actions.push_back(Action::SendMessage {
@@ -224,24 +213,25 @@ impl AgentState {
                                 }
 
                                 if let Some(ref ext) = self.tracing_extension {
-                                    let protocol::ArchivedArgs::Tracing(tracing_args) = args;
-                                    let handle = AgentHandle::new(producer.clone());
-                                    debug!(client_id, "starting extension");
-                                    match ext.start(tracing_args, &handle) {
-                                        Ok(()) => {
-                                            self.extension_active = true;
-                                            debug!(client_id, "extension started successfully");
-                                        }
-                                        Err(e) => {
-                                            let ExtensionError::ValidationError(error_msg) = e;
-                                            actions.push_back(Action::SendMessage {
-                                                client_id,
-                                                message: ControlMessage::Nack {
-                                                    error: error_msg.clone(),
-                                                },
-                                            });
-                                            debug!(client_id, error = %error_msg, "extension start failed");
-                                            return;
+                                    if let ArchivedOption::Some(tracing_args) = &args.tracing {
+                                        let handle = AgentHandle::new(producer.clone());
+                                        debug!(client_id, "starting extension");
+                                        match ext.start(tracing_args, &handle) {
+                                            Ok(()) => {
+                                                self.extension_active = true;
+                                                debug!(client_id, "extension started successfully");
+                                            }
+                                            Err(e) => {
+                                                let ExtensionError::ValidationError(error_msg) = e;
+                                                actions.push_back(Action::SendMessage {
+                                                    client_id,
+                                                    message: ControlMessage::Nack {
+                                                        error: error_msg.clone(),
+                                                    },
+                                                });
+                                                debug!(client_id, error = %error_msg, "extension start failed");
+                                                return;
+                                            }
                                         }
                                     }
                                 }
@@ -574,10 +564,12 @@ mod tests {
 
         let start_msg = ControlMessage::Start {
             buffer_size: 4096,
-            args: protocol::Args::Tracing(protocol::TracingArgs {
-                log_filter: "debug".to_string(),
-                timestamp_type: protocol::TimestampType::Monotonic,
-            }),
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "debug".to_string(),
+                    timestamp_type: protocol::TimestampType::Monotonic,
+                }),
+            },
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();
@@ -620,10 +612,12 @@ mod tests {
 
         let start_msg = ControlMessage::Start {
             buffer_size: 4096,
-            args: protocol::Args::Tracing(protocol::TracingArgs {
-                log_filter: "debug".to_string(),
-                timestamp_type: protocol::TimestampType::Monotonic,
-            }),
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "debug".to_string(),
+                    timestamp_type: protocol::TimestampType::Monotonic,
+                }),
+            },
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();
@@ -687,10 +681,12 @@ mod tests {
 
         let start_msg = ControlMessage::Start {
             buffer_size: 4096,
-            args: protocol::Args::Tracing(protocol::TracingArgs {
-                log_filter: "invalid!!!filter".to_string(),
-                timestamp_type: protocol::TimestampType::Monotonic,
-            }),
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "invalid!!!filter".to_string(),
+                    timestamp_type: protocol::TimestampType::Monotonic,
+                }),
+            },
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();
@@ -726,10 +722,12 @@ mod tests {
 
         let start_msg = ControlMessage::Start {
             buffer_size: 4096,
-            args: protocol::Args::Tracing(protocol::TracingArgs {
-                log_filter: "debug".to_string(),
-                timestamp_type: protocol::TimestampType::Monotonic,
-            }),
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "debug".to_string(),
+                    timestamp_type: protocol::TimestampType::Monotonic,
+                }),
+            },
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();
@@ -870,10 +868,12 @@ mod tests {
 
         let start_msg = ControlMessage::Start {
             buffer_size: 4096,
-            args: protocol::Args::Tracing(protocol::TracingArgs {
-                log_filter: "info".to_string(),
-                timestamp_type: protocol::TimestampType::Boottime,
-            }),
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "info".to_string(),
+                    timestamp_type: protocol::TimestampType::Boottime,
+                }),
+            },
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();
@@ -962,10 +962,12 @@ mod tests {
 
         let start_msg = ControlMessage::Start {
             buffer_size: 4096,
-            args: protocol::Args::Tracing(protocol::TracingArgs {
-                log_filter: "debug".to_string(),
-                timestamp_type: protocol::TimestampType::Monotonic,
-            }),
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "debug".to_string(),
+                    timestamp_type: protocol::TimestampType::Monotonic,
+                }),
+            },
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();
@@ -1035,10 +1037,12 @@ mod tests {
 
         let start_msg = ControlMessage::Start {
             buffer_size: 4096,
-            args: protocol::Args::Tracing(protocol::TracingArgs {
-                log_filter: "debug".to_string(),
-                timestamp_type: protocol::TimestampType::Monotonic,
-            }),
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "debug".to_string(),
+                    timestamp_type: protocol::TimestampType::Monotonic,
+                }),
+            },
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();
@@ -1056,5 +1060,44 @@ mod tests {
             matches!(&actions[0], Action::SendMessage { message: ControlMessage::Nack { error }, .. }
             if *error == "invalid file descriptors")
         );
+    }
+
+    #[rstest]
+    fn test_handle_message_pending_start_empty_args(test_consumer: Consumer) {
+        let mut agent_state = AgentState::new(2000, None);
+        let mut actions = VecDeque::new();
+
+        let client_id = agent_state.get_next_client_id();
+        agent_state.register_client(client_id, &mut actions);
+
+        let start_msg = ControlMessage::Start {
+            buffer_size: 4096,
+            args: protocol::Args { tracing: None },
+        };
+
+        let serialized_len = protocol::compute_length(&start_msg).unwrap();
+        let mut buf = vec![0u8; serialized_len];
+        protocol::serialize_to_buf(&start_msg, &mut buf).unwrap();
+        let archived_msg =
+            rkyv::access::<protocol::ArchivedControlMessage, rkyv::rancor::Error>(&buf).unwrap();
+
+        let memory_fd = test_consumer.memory_fd().try_clone_to_owned().unwrap();
+        let notification_fd = test_consumer
+            .notification_fd()
+            .try_clone_to_owned()
+            .unwrap();
+        let raw_fds = [memory_fd.into_raw_fd(), notification_fd.into_raw_fd()];
+
+        let mut actions = VecDeque::new();
+        agent_state.handle_message(client_id, archived_msg, &raw_fds, &mut actions);
+
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::SendMessage { client_id: id, message: ControlMessage::Nack { error } }
+            if *id == client_id && *error == "at least one arg must be non-empty")
+        );
+
+        let client = agent_state.clients.get(&client_id).unwrap();
+        assert!(matches!(client.state, State::Pending));
     }
 }

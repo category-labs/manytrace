@@ -89,10 +89,12 @@ impl AgentClient {
 
         let start_msg = ProtocolControlMessage::Start {
             buffer_size: consumer.data_size() as u64,
-            args: Args::Tracing(TracingArgs {
-                log_filter,
-                timestamp_type,
-            }),
+            args: Args {
+                tracing: Some(TracingArgs {
+                    log_filter,
+                    timestamp_type,
+                }),
+            },
         };
 
         let serialized_len = protocol::compute_length(&start_msg)?;

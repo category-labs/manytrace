@@ -208,8 +208,17 @@ pub struct TracingArgs {
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[rkyv(compare(PartialEq))]
-pub enum Args {
-    Tracing(TracingArgs),
+pub struct Args {
+    pub tracing: Option<TracingArgs>,
+}
+
+impl Args {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.tracing.is_none() {
+            return Err("at least one arg must be non-empty");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -664,10 +673,12 @@ mod tests {
         let messages = [
             ControlMessage::Start {
                 buffer_size: 1024,
-                args: Args::Tracing(TracingArgs {
-                    log_filter: "info".to_string(),
-                    timestamp_type: TimestampType::Monotonic,
-                }),
+                args: Args {
+                    tracing: Some(TracingArgs {
+                        log_filter: "info".to_string(),
+                        timestamp_type: TimestampType::Monotonic,
+                    }),
+                },
             },
             ControlMessage::Stop,
             ControlMessage::Continue,
@@ -692,8 +703,11 @@ mod tests {
                     },
                 ) => {
                     assert_eq!(*buffer_size, arch_size.to_native());
-                    match (args, arch_args) {
-                        (Args::Tracing(tracing_args), ArchivedArgs::Tracing(arch_tracing_args)) => {
+                    match (&args.tracing, &arch_args.tracing) {
+                        (
+                            Some(tracing_args),
+                            rkyv::option::ArchivedOption::Some(arch_tracing_args),
+                        ) => {
                             assert_eq!(
                                 &tracing_args.log_filter,
                                 std::str::from_utf8(arch_tracing_args.log_filter.as_bytes())
@@ -704,6 +718,7 @@ mod tests {
                                 arch_tracing_args.timestamp_type
                             );
                         }
+                        _ => panic!("mismatched tracing args"),
                     }
                 }
                 (ControlMessage::Stop, ArchivedControlMessage::Stop) => {}
