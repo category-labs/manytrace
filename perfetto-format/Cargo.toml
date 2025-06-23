@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 prost = "0.13"
 bytes = "1.6"
+protocol = { path = "../protocol" }
 
 [build-dependencies]
 prost-build = "0.13"

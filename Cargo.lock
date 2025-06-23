@@ -901,7 +901,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "interned-events"
+name = "interned-symbolizer"
 version = "0.1.0"
 dependencies = [
  "blazesym",
@@ -1281,6 +1281,7 @@ dependencies = [
  "bytes",
  "prost",
  "prost-build",
+ "protocol",
  "thread-id",
 ]
 

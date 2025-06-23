@@ -1,5 +1,8 @@
 use bytes::BytesMut;
 use prost::Message;
+use protocol::{
+    CallstackIterable, FrameIterable, InternedDataIterable, InternedStringIterable, MappingIterable,
+};
 use std::io::Write;
 
 #[allow(clippy::all)]
@@ -14,8 +17,6 @@ pub struct PerfettoStreamWriter<W: Write> {
     writer: W,
     sequence_id: u32,
     track_uuid_counter: u64,
-    frame_counter: u64,
-    function_counter: u64,
 }
 
 impl<W: Write> PerfettoStreamWriter<W> {
@@ -24,8 +25,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
             writer,
             sequence_id: 1,
             track_uuid_counter: 1000,
-            frame_counter: 0,
-            function_counter: 0,
         }
     }
 
@@ -154,21 +153,59 @@ impl<W: Write> PerfettoStreamWriter<W> {
         self.writer.flush()
     }
 
-    pub fn write_callstack_interned_data(
+    pub fn write_protocol_interned_data<'a>(
         &mut self,
-        callstack_iid: u64,
-        frames: Vec<(&str, &str, u64)>,
+        data: &'a impl InternedDataIterable<'a>,
     ) -> Result<(), std::io::Error> {
-        let interned_data = if self.frame_counter == 0 && self.function_counter == 0 {
-            create_callstack_interned_data(callstack_iid, frames)
-        } else {
-            create_callstack_interned_next(callstack_iid, self.frame_counter, frames)
-        };
+        let mut interned_data = InternedData::default();
 
-        if self.frame_counter == 0 && self.function_counter == 0 {
-            self.write_interned_data(interned_data)
-        } else {
+        for func in data.function_names() {
+            interned_data.function_names.push(InternedString {
+                iid: Some(func.iid()),
+                str: Some(func.str_ref().as_bytes().to_vec()),
+            });
+        }
+
+        for frame in data.frames() {
+            interned_data.frames.push(Frame {
+                iid: Some(frame.iid()),
+                function_name_id: Some(frame.function_name_id()),
+                mapping_id: Some(frame.mapping_id()),
+                rel_pc: Some(frame.rel_pc()),
+            });
+        }
+
+        for callstack in data.callstacks() {
+            interned_data.callstacks.push(Callstack {
+                iid: Some(callstack.iid()),
+                frame_ids: callstack.frame_ids(),
+            });
+        }
+
+        for mapping in data.mappings() {
+            interned_data.mappings.push(Mapping {
+                iid: Some(mapping.iid()),
+                build_id: Some(mapping.build_id()),
+                exact_offset: Some(mapping.exact_offset()),
+                start_offset: Some(mapping.start_offset()),
+                start: Some(mapping.start()),
+                end: Some(mapping.end()),
+                load_bias: Some(mapping.load_bias()),
+                path_string_ids: mapping.path_string_ids(),
+            });
+        }
+
+        for build_id in data.build_ids() {
+            interned_data.build_ids.push(InternedString {
+                iid: Some(build_id.iid()),
+                str: Some(build_id.str_ref().as_bytes().to_vec()),
+            });
+        }
+
+        if data.continuation() {
             self.write_interned_data_next(interned_data)
+        } else {
+            self.write_interned_data(interned_data)
         }
     }
 
@@ -208,9 +245,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
         &mut self,
         interned_data: InternedData,
     ) -> Result<(), std::io::Error> {
-        self.frame_counter += interned_data.frames.len() as u64;
-        self.function_counter += interned_data.function_names.len() as u64;
-
         let packet = TracePacket {
             interned_data: Some(interned_data),
             sequence_flags: Some(trace_packet::SequenceFlags::SeqIncrementalStateCleared as u32),
@@ -228,9 +262,6 @@ impl<W: Write> PerfettoStreamWriter<W> {
         &mut self,
         interned_data: InternedData,
     ) -> Result<(), std::io::Error> {
-        self.frame_counter += interned_data.frames.len() as u64;
-        self.function_counter += interned_data.function_names.len() as u64;
-
         let packet = TracePacket {
             interned_data: Some(interned_data),
             sequence_flags: Some(trace_packet::SequenceFlags::SeqNeedsIncrementalState as u32),
@@ -413,93 +444,4 @@ pub enum DebugValue {
     Int(i64),
     Double(f64),
     Bool(bool),
-}
-
-pub fn create_callstack_interned_data(
-    callstack_iid: u64,
-    frames: Vec<(&str, &str, u64)>,
-) -> InternedData {
-    let mut interned_data = InternedData::default();
-
-    interned_data.function_names.push(InternedString {
-        iid: Some(0),
-        str: Some(b"<unknown>".to_vec()),
-    });
-
-    for (i, (function_name, _, _)) in frames.iter().enumerate() {
-        let function = InternedString {
-            iid: Some(1 + i as u64),
-            str: Some(function_name.as_bytes().to_vec()),
-        };
-        interned_data.function_names.push(function);
-    }
-
-    for (i, (_, _, addr)) in frames.iter().enumerate() {
-        let frame = Frame {
-            iid: Some(i as u64),
-            function_name_id: Some(1 + i as u64),
-            mapping_id: Some(1),
-            rel_pc: Some(*addr),
-        };
-        interned_data.frames.push(frame);
-    }
-
-    let callstack = Callstack {
-        iid: Some(callstack_iid),
-        frame_ids: frames.iter().enumerate().map(|(i, _)| i as u64).collect(),
-    };
-    interned_data.mappings.push(Mapping {
-        iid: Some(1),
-        build_id: Some(1),
-        exact_offset: Some(0),
-        start_offset: Some(0),
-        start: Some(0),
-        end: Some(0x7fffffffffffffff),
-        load_bias: Some(0),
-        path_string_ids: vec![],
-    });
-
-    interned_data.build_ids.push(InternedString {
-        iid: Some(1),
-        str: Some(b"unknown".to_vec()),
-    });
-
-    interned_data.callstacks.push(callstack);
-    interned_data
-}
-
-pub fn create_callstack_interned_next(
-    callstack_iid: u64,
-    frame_idx_start: u64,
-    frames: Vec<(&str, &str, u64)>,
-) -> InternedData {
-    let mut interned_data = InternedData::default();
-
-    let function_idx_start = frame_idx_start + 1; // +1 for the initial <unknown> function
-
-    for (i, (function_name, _, _)) in frames.iter().enumerate() {
-        let function = InternedString {
-            iid: Some(function_idx_start + i as u64),
-            str: Some(function_name.as_bytes().to_vec()),
-        };
-        interned_data.function_names.push(function);
-    }
-
-    for (i, (_, _, addr)) in frames.iter().enumerate() {
-        let frame = Frame {
-            iid: Some(frame_idx_start + i as u64),
-            function_name_id: Some(function_idx_start + i as u64),
-            mapping_id: Some(1),
-            rel_pc: Some(*addr),
-        };
-        interned_data.frames.push(frame);
-    }
-
-    let callstack = Callstack {
-        iid: Some(callstack_iid),
-        frame_ids: interned_data.frames.iter().map(|fr| fr.iid()).collect(),
-    };
-
-    interned_data.callstacks.push(callstack);
-    interned_data
 }

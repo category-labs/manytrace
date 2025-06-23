@@ -1,12 +1,9 @@
-use crate::interned_data_iter::{
-    CallstackIterable, FrameIterable, InternedDataIterable, InternedStringIterable,
-};
 use crate::label_iter::LabelIterator;
 use perfetto_format::{
     create_debug_annotation, perfetto::profiling::CpuMode as PerfettoCpuMode, DebugAnnotation,
     DebugValue, PerfettoStreamWriter,
 };
-use protocol::{ArchivedEvent, CpuMode, Event};
+use protocol::{ArchivedEvent, CpuMode, Event, InternedDataIterable};
 use std::collections::HashMap;
 use std::io::Write;
 
@@ -106,29 +103,7 @@ impl<W: Write> PerfettoConverter<W> {
         &mut self,
         data: &'a impl InternedDataIterable<'a>,
     ) -> eyre::Result<()> {
-        for callstack in data.callstacks() {
-            let frame_ids = callstack.frame_ids();
-            let mut frames_with_names = Vec::new();
-
-            for &frame_id in frame_ids.iter() {
-                if let Some(frame) = data.frames().find(|f| f.iid() == frame_id) {
-                    if let Some(func) = data
-                        .function_names()
-                        .find(|f| f.iid() == frame.function_name_id())
-                    {
-                        frames_with_names.push((func.str_ref().to_string(), frame.rel_pc()));
-                    }
-                }
-            }
-
-            let frames_data: Vec<(&str, &str, u64)> = frames_with_names
-                .iter()
-                .map(|(name, rel_pc)| (name.as_str(), "", *rel_pc))
-                .collect();
-
-            self.writer
-                .write_callstack_interned_data(callstack.iid(), frames_data)?;
-        }
+        self.writer.write_protocol_interned_data(data)?;
         Ok(())
     }
 

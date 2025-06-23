@@ -484,6 +484,7 @@ impl<'a> InternState<'a> {
             }],
             mappings,
             build_ids,
+            continuation: false,
         }
     }
 }

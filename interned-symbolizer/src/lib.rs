@@ -1,11 +1,13 @@
 use blazesym::symbolize::source::{Kernel, Process, Source};
 use blazesym::symbolize::{Input, Symbolized, Symbolizer as BlazeSymbolizer};
 use blazesym::Pid;
-use protocol::{Callstack, Frame, InternedData, InternedString};
+use protocol::{Callstack, Frame, InternedData, InternedString, Mapping};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use thiserror::Error;
+
+const FAKE_MAPPING_ID: u64 = 1;
 
 #[derive(Error, Debug)]
 pub enum SymbolizerError {
@@ -21,6 +23,13 @@ pub struct InternedCache {
 
     next_frame_sequence: u64,
     pid_frame_to_sequence: HashMap<(i32, u64), u64>,
+
+    unknown_function_id: Option<u64>,
+    next_function_id: u64,
+    fake_mapping_id: Option<u64>,
+    next_mapping_id: u64,
+
+    is_first_interned_data: bool,
 }
 
 impl InternedCache {
@@ -30,6 +39,11 @@ impl InternedCache {
             callstack_hash_to_sequence: HashMap::new(),
             next_frame_sequence: 0,
             pid_frame_to_sequence: HashMap::new(),
+            unknown_function_id: None,
+            next_function_id: 0,
+            fake_mapping_id: None,
+            next_mapping_id: 0,
+            is_first_interned_data: true,
         }
     }
 
@@ -69,6 +83,39 @@ impl InternedCache {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         callstack.hash(&mut hasher);
         hasher.finish()
+    }
+
+    pub fn get_or_create_unknown_function_id(&mut self) -> u64 {
+        if let Some(id) = self.unknown_function_id {
+            id
+        } else {
+            let id = self.next_function_id;
+            self.next_function_id += 1;
+            self.unknown_function_id = Some(id);
+            id
+        }
+    }
+
+    pub fn get_or_create_fake_mapping_id(&mut self) -> u64 {
+        if let Some(id) = self.fake_mapping_id {
+            id
+        } else {
+            self.fake_mapping_id = Some(FAKE_MAPPING_ID);
+            self.next_mapping_id = FAKE_MAPPING_ID + 1;
+            FAKE_MAPPING_ID
+        }
+    }
+
+    pub fn reserve_function_id(&mut self) -> u64 {
+        let id = self.next_function_id;
+        self.next_function_id += 1;
+        id
+    }
+
+    pub fn take_is_first_interned_data(&mut self) -> bool {
+        let was_first = self.is_first_interned_data;
+        self.is_first_interned_data = false;
+        was_first
     }
 }
 
@@ -131,6 +178,37 @@ impl<'a> Interned<'a> {
         let mut all_frame_ids = Vec::new();
         let mut new_function_names = Vec::new();
         let mut new_frames = Vec::new();
+        let mut new_mappings = Vec::new();
+        let mut new_build_ids = Vec::new();
+
+        let need_unknown_function = self.cache.unknown_function_id.is_none();
+        let need_fake_mapping = self.cache.fake_mapping_id.is_none();
+
+        if need_unknown_function {
+            let unknown_id = self.cache.get_or_create_unknown_function_id();
+            new_function_names.push(InternedString {
+                iid: unknown_id,
+                str: Cow::Borrowed("<unknown>"),
+            });
+        }
+
+        if need_fake_mapping {
+            let mapping_id = self.cache.get_or_create_fake_mapping_id();
+            new_mappings.push(Mapping {
+                iid: mapping_id,
+                build_id: 1,
+                exact_offset: 0,
+                start_offset: 0,
+                start: 0,
+                end: 0x7fffffffffffffff,
+                load_bias: 0,
+                path_string_ids: vec![],
+            });
+            new_build_ids.push(InternedString {
+                iid: 1,
+                str: Cow::Borrowed("unknown"),
+            });
+        }
 
         for (i, sym) in self.user_symbols.iter().enumerate() {
             let addr = self.user_addresses[i];
@@ -138,20 +216,24 @@ impl<'a> Interned<'a> {
             let frame_id = self.cache.reserve_frame(self.pid, addr);
             all_frame_ids.push(frame_id);
 
-            if let Some(sym) = sym.as_sym() {
-                if is_new_frame {
-                    let func_id = frame_id + 1;
+            if is_new_frame {
+                let func_id = if let Some(sym) = sym.as_sym() {
+                    let id = self.cache.reserve_function_id();
                     new_function_names.push(InternedString {
-                        iid: func_id,
+                        iid: id,
                         str: Cow::Borrowed(sym.name.as_ref()),
                     });
-                    new_frames.push(Frame {
-                        iid: frame_id,
-                        function_name_id: func_id,
-                        mapping_id: 0,
-                        rel_pc: addr,
-                    });
-                }
+                    id
+                } else {
+                    self.cache.get_or_create_unknown_function_id()
+                };
+
+                new_frames.push(Frame {
+                    iid: frame_id,
+                    function_name_id: func_id,
+                    mapping_id: FAKE_MAPPING_ID,
+                    rel_pc: addr,
+                });
             }
         }
 
@@ -161,40 +243,48 @@ impl<'a> Interned<'a> {
             let frame_id = self.cache.reserve_frame(self.pid, addr);
             all_frame_ids.push(frame_id);
 
-            if let Some(sym) = sym.as_sym() {
-                if is_new_frame {
-                    let func_id = frame_id + 1;
+            if is_new_frame {
+                let func_id = if let Some(sym) = sym.as_sym() {
+                    let id = self.cache.reserve_function_id();
                     new_function_names.push(InternedString {
-                        iid: func_id,
+                        iid: id,
                         str: Cow::Borrowed(sym.name.as_ref()),
                     });
-                    new_frames.push(Frame {
-                        iid: frame_id,
-                        function_name_id: func_id,
-                        mapping_id: 0,
-                        rel_pc: addr,
-                    });
-                }
+                    id
+                } else {
+                    self.cache.get_or_create_unknown_function_id()
+                };
+
+                new_frames.push(Frame {
+                    iid: frame_id,
+                    function_name_id: func_id,
+                    mapping_id: FAKE_MAPPING_ID,
+                    rel_pc: addr,
+                });
             }
         }
 
         let callstack_id = self.cache.reserve_callstack(all_frame_ids.clone());
 
-        let data = if !new_function_names.is_empty() || !new_frames.is_empty() {
-            let interned_data = InternedData {
-                function_names: new_function_names,
-                frames: new_frames,
-                callstacks: vec![Callstack {
-                    iid: callstack_id,
-                    frame_ids: all_frame_ids.clone(),
-                }],
-                mappings: vec![],
-                build_ids: vec![],
+        let data =
+            if !new_function_names.is_empty() || !new_frames.is_empty() || !new_mappings.is_empty()
+            {
+                let continuation = !self.cache.take_is_first_interned_data();
+                let interned_data = InternedData {
+                    function_names: new_function_names,
+                    frames: new_frames,
+                    callstacks: vec![Callstack {
+                        iid: callstack_id,
+                        frame_ids: all_frame_ids.clone(),
+                    }],
+                    mappings: new_mappings,
+                    build_ids: new_build_ids,
+                    continuation,
+                };
+                Some(interned_data)
+            } else {
+                None
             };
-            Some(interned_data)
-        } else {
-            None
-        };
         (callstack_id, data)
     }
 }

@@ -8,7 +8,7 @@ use rkyv::rancor::{fail, Fallible};
 use rkyv::ser::allocator::ArenaHandle;
 use rkyv::ser::{Positional, Writer};
 use rkyv::with::{AsOwned, Identity, InlineAsBox, Map, MapKV};
-use rkyv::{Archive, Deserialize, Serialize};
+use rkyv::{Archive, Archived, Deserialize, Serialize};
 
 #[derive(Archive, Deserialize, Serialize, Clone)]
 pub struct Labels<'a> {
@@ -47,6 +47,7 @@ impl<'a> InternedData<'a> {
             callstacks: Vec::new(),
             mappings: Vec::new(),
             build_ids: Vec::new(),
+            continuation: false,
         }
     }
 }
@@ -150,6 +151,7 @@ pub struct InternedData<'a> {
     pub callstacks: Vec<Callstack>,
     pub mappings: Vec<Mapping>,
     pub build_ids: Vec<InternedString<'a>>,
+    pub continuation: bool,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -350,6 +352,285 @@ where
     let writer = CountingWriter::new();
     let w = to_bytes_in(value, writer)?;
     Ok(w.total_bytes())
+}
+
+pub trait CallstackIterable {
+    type Item;
+    fn iid(&self) -> u64;
+    fn frame_ids(&self) -> Vec<u64>;
+}
+
+pub trait FrameIterable {
+    fn iid(&self) -> u64;
+    fn function_name_id(&self) -> u64;
+    fn mapping_id(&self) -> u64;
+    fn rel_pc(&self) -> u64;
+}
+
+pub trait InternedStringIterable {
+    fn iid(&self) -> u64;
+    fn str_ref(&self) -> &str;
+}
+
+pub trait MappingIterable {
+    fn iid(&self) -> u64;
+    fn build_id(&self) -> u64;
+    fn exact_offset(&self) -> u64;
+    fn start_offset(&self) -> u64;
+    fn start(&self) -> u64;
+    fn end(&self) -> u64;
+    fn load_bias(&self) -> u64;
+    fn path_string_ids(&self) -> Vec<u64>;
+}
+
+pub trait InternedDataIterable<'a> {
+    type Callstack: CallstackIterable + 'a;
+    type Frame: FrameIterable + 'a;
+    type FunctionName: InternedStringIterable + 'a;
+    type Mapping: MappingIterable + 'a;
+    type BuildId: InternedStringIterable + 'a;
+
+    type CallstackIter: Iterator<Item = &'a Self::Callstack> + Clone;
+    type FrameIter: Iterator<Item = &'a Self::Frame> + Clone;
+    type FunctionNameIter: Iterator<Item = &'a Self::FunctionName> + Clone;
+    type MappingIter: Iterator<Item = &'a Self::Mapping> + Clone;
+    type BuildIdIter: Iterator<Item = &'a Self::BuildId> + Clone;
+
+    fn callstacks(&'a self) -> Self::CallstackIter;
+    fn frames(&'a self) -> Self::FrameIter;
+    fn function_names(&'a self) -> Self::FunctionNameIter;
+    fn mappings(&'a self) -> Self::MappingIter;
+    fn build_ids(&'a self) -> Self::BuildIdIter;
+    fn continuation(&self) -> bool;
+}
+
+impl CallstackIterable for Callstack {
+    type Item = u64;
+
+    fn iid(&self) -> u64 {
+        self.iid
+    }
+
+    fn frame_ids(&self) -> Vec<u64> {
+        self.frame_ids.clone()
+    }
+}
+
+impl FrameIterable for Frame {
+    fn iid(&self) -> u64 {
+        self.iid
+    }
+
+    fn function_name_id(&self) -> u64 {
+        self.function_name_id
+    }
+
+    fn mapping_id(&self) -> u64 {
+        self.mapping_id
+    }
+
+    fn rel_pc(&self) -> u64 {
+        self.rel_pc
+    }
+}
+
+impl<'a> InternedStringIterable for InternedString<'a> {
+    fn iid(&self) -> u64 {
+        self.iid
+    }
+
+    fn str_ref(&self) -> &str {
+        self.str.as_ref()
+    }
+}
+
+impl MappingIterable for Mapping {
+    fn iid(&self) -> u64 {
+        self.iid
+    }
+
+    fn build_id(&self) -> u64 {
+        self.build_id
+    }
+
+    fn exact_offset(&self) -> u64 {
+        self.exact_offset
+    }
+
+    fn start_offset(&self) -> u64 {
+        self.start_offset
+    }
+
+    fn start(&self) -> u64 {
+        self.start
+    }
+
+    fn end(&self) -> u64 {
+        self.end
+    }
+
+    fn load_bias(&self) -> u64 {
+        self.load_bias
+    }
+
+    fn path_string_ids(&self) -> Vec<u64> {
+        self.path_string_ids.clone()
+    }
+}
+
+impl<'a> InternedDataIterable<'a> for InternedData<'a> {
+    type Callstack = Callstack;
+    type Frame = Frame;
+    type FunctionName = InternedString<'a>;
+    type Mapping = Mapping;
+    type BuildId = InternedString<'a>;
+
+    type CallstackIter = std::slice::Iter<'a, Callstack>;
+    type FrameIter = std::slice::Iter<'a, Frame>;
+    type FunctionNameIter = std::slice::Iter<'a, InternedString<'a>>;
+    type MappingIter = std::slice::Iter<'a, Mapping>;
+    type BuildIdIter = std::slice::Iter<'a, InternedString<'a>>;
+
+    fn callstacks(&'a self) -> Self::CallstackIter {
+        self.callstacks.iter()
+    }
+
+    fn frames(&'a self) -> Self::FrameIter {
+        self.frames.iter()
+    }
+
+    fn function_names(&'a self) -> Self::FunctionNameIter {
+        self.function_names.iter()
+    }
+
+    fn mappings(&'a self) -> Self::MappingIter {
+        self.mappings.iter()
+    }
+
+    fn build_ids(&'a self) -> Self::BuildIdIter {
+        self.build_ids.iter()
+    }
+
+    fn continuation(&self) -> bool {
+        self.continuation
+    }
+}
+
+impl CallstackIterable for ArchivedCallstack {
+    type Item = Archived<u64>;
+
+    fn iid(&self) -> u64 {
+        self.iid.to_native()
+    }
+
+    fn frame_ids(&self) -> Vec<u64> {
+        self.frame_ids.iter().map(|id| id.to_native()).collect()
+    }
+}
+
+impl FrameIterable for ArchivedFrame {
+    fn iid(&self) -> u64 {
+        self.iid.to_native()
+    }
+
+    fn function_name_id(&self) -> u64 {
+        self.function_name_id.to_native()
+    }
+
+    fn mapping_id(&self) -> u64 {
+        self.mapping_id.to_native()
+    }
+
+    fn rel_pc(&self) -> u64 {
+        self.rel_pc.to_native()
+    }
+}
+
+impl<'a> InternedStringIterable for ArchivedInternedString<'a> {
+    fn iid(&self) -> u64 {
+        self.iid.to_native()
+    }
+
+    fn str_ref(&self) -> &str {
+        self.str.as_ref()
+    }
+}
+
+type ArchivedVecIter<'a, T> = std::slice::Iter<'a, T>;
+
+impl MappingIterable for ArchivedMapping {
+    fn iid(&self) -> u64 {
+        self.iid.to_native()
+    }
+
+    fn build_id(&self) -> u64 {
+        self.build_id.to_native()
+    }
+
+    fn exact_offset(&self) -> u64 {
+        self.exact_offset.to_native()
+    }
+
+    fn start_offset(&self) -> u64 {
+        self.start_offset.to_native()
+    }
+
+    fn start(&self) -> u64 {
+        self.start.to_native()
+    }
+
+    fn end(&self) -> u64 {
+        self.end.to_native()
+    }
+
+    fn load_bias(&self) -> u64 {
+        self.load_bias.to_native()
+    }
+
+    fn path_string_ids(&self) -> Vec<u64> {
+        self.path_string_ids
+            .iter()
+            .map(|id| id.to_native())
+            .collect()
+    }
+}
+
+impl<'a> InternedDataIterable<'a> for ArchivedInternedData<'a> {
+    type Callstack = ArchivedCallstack;
+    type Frame = ArchivedFrame;
+    type FunctionName = ArchivedInternedString<'a>;
+    type Mapping = ArchivedMapping;
+    type BuildId = ArchivedInternedString<'a>;
+
+    type CallstackIter = ArchivedVecIter<'a, ArchivedCallstack>;
+    type FrameIter = ArchivedVecIter<'a, ArchivedFrame>;
+    type FunctionNameIter = ArchivedVecIter<'a, ArchivedInternedString<'a>>;
+    type MappingIter = ArchivedVecIter<'a, ArchivedMapping>;
+    type BuildIdIter = ArchivedVecIter<'a, ArchivedInternedString<'a>>;
+
+    fn callstacks(&'a self) -> Self::CallstackIter {
+        self.callstacks.as_slice().iter()
+    }
+
+    fn frames(&'a self) -> Self::FrameIter {
+        self.frames.as_slice().iter()
+    }
+
+    fn function_names(&'a self) -> Self::FunctionNameIter {
+        self.function_names.as_slice().iter()
+    }
+
+    fn mappings(&'a self) -> Self::MappingIter {
+        self.mappings.as_slice().iter()
+    }
+
+    fn build_ids(&'a self) -> Self::BuildIdIter {
+        self.build_ids.as_slice().iter()
+    }
+
+    fn continuation(&self) -> bool {
+        self.continuation
+    }
 }
 
 #[cfg(test)]
