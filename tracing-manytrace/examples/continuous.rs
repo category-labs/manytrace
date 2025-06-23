@@ -1,11 +1,11 @@
-use agent::Agent;
+use agent::AgentBuilder;
 use clap::Parser;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
-use tracing_manytrace::ManytraceLayer;
+use tracing_manytrace::{ManytraceLayer, TracingExtension};
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser)]
@@ -77,10 +77,13 @@ fn monitoring_thread(running: Arc<AtomicBool>) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let agent = Arc::new(Agent::new(args.socket_path.clone())?);
+    let extension = Arc::new(TracingExtension::new());
+    let _agent = AgentBuilder::new(args.socket_path.clone())
+        .register_tracing(Box::new((*extension).clone()))
+        .build()?;
 
     tracing_subscriber::registry()
-        .with(ManytraceLayer::new(agent))
+        .with(ManytraceLayer::new(extension))
         .with(tracing_subscriber::fmt::layer())
         .init();
 

@@ -2,7 +2,7 @@ use divan::Bencher;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tracing::info;
-use tracing_manytrace::ManytraceLayer;
+use tracing_manytrace::{ManytraceLayer, TracingExtension};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Registry;
 
@@ -13,7 +13,8 @@ fn main() {
 struct BenchSetup {
     _temp_dir: TempDir,
     _client: agent::AgentClient,
-    agent: Arc<agent::Agent>,
+    _agent: agent::Agent,
+    extension: Arc<TracingExtension>,
 }
 
 fn setup_tracing() -> BenchSetup {
@@ -21,7 +22,11 @@ fn setup_tracing() -> BenchSetup {
     let socket_path = temp_dir.path().join("bench.sock");
     let socket_path_str = socket_path.to_string_lossy().to_string();
 
-    let agent = Arc::new(agent::Agent::new(socket_path_str.clone()).unwrap());
+    let extension = Arc::new(TracingExtension::new());
+    let agent = agent::AgentBuilder::new(socket_path_str.clone())
+        .register_tracing(Box::new((*extension).clone()))
+        .build()
+        .unwrap();
 
     let consumer = agent::Consumer::new(128 << 20).unwrap();
     let mut client = agent::AgentClient::new(socket_path_str);
@@ -39,11 +44,11 @@ fn setup_tracing() -> BenchSetup {
     }
 
     for i in 0..10 {
-        if agent.enabled() {
+        if extension.is_active() {
             break;
         }
         if i == 9 {
-            panic!("Agent never became enabled");
+            panic!("Extension never became active");
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -51,14 +56,15 @@ fn setup_tracing() -> BenchSetup {
     BenchSetup {
         _temp_dir: temp_dir,
         _client: client,
-        agent,
+        _agent: agent,
+        extension,
     }
 }
 
 #[divan::bench]
 fn bench_info_event(bencher: Bencher) {
     let setup = setup_tracing();
-    let layer = ManytraceLayer::new(setup.agent);
+    let layer = ManytraceLayer::new(setup.extension);
     let subscriber = Registry::default().with(layer);
     let _guard = tracing::subscriber::set_default(subscriber);
     bencher.bench_local(|| {
@@ -69,7 +75,7 @@ fn bench_info_event(bencher: Bencher) {
 #[divan::bench]
 fn bench_info_event_with_fields(bencher: Bencher) {
     let setup = setup_tracing();
-    let layer = ManytraceLayer::new(setup.agent);
+    let layer = ManytraceLayer::new(setup.extension);
     let subscriber = Registry::default().with(layer);
     let _guard = tracing::subscriber::set_default(subscriber);
     bencher.bench_local(|| {

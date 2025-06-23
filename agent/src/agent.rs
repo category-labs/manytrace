@@ -1,83 +1,11 @@
-use arc_swap::ArcSwapOption;
-use protocol::{ArchivedTracingArgs, Args, Event, TimestampType};
+use protocol::ArchivedTracingArgs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use thread_local::ThreadLocal;
-use tracing_subscriber::EnvFilter;
 
 use crate::epoll_thread::epoll_listener_thread;
 use crate::extension::Extension;
-use crate::{Producer, Result};
-
-/// Producer state containing producer and thread tracking.
-pub(crate) struct ProducerState {
-    producer: Arc<Producer>,
-    clock_id: libc::clockid_t,
-    env_filter: Option<EnvFilter>,
-    thread_names_sent: Arc<ThreadLocal<std::cell::Cell<bool>>>,
-}
-
-impl ProducerState {
-    pub(crate) fn new(producer: Arc<Producer>, args: Option<Args>) -> Self {
-        let (clock_id, env_filter) = match &args {
-            Some(Args::Tracing(tracing_args)) => {
-                let clock_id = match tracing_args.timestamp_type {
-                    TimestampType::Monotonic => libc::CLOCK_MONOTONIC,
-                    TimestampType::Boottime => libc::CLOCK_BOOTTIME,
-                    TimestampType::Realtime => libc::CLOCK_REALTIME,
-                };
-                // filter has already been validated in agent_state.rs
-                let filter = EnvFilter::try_new(&tracing_args.log_filter).unwrap();
-                tracing::debug!(
-                    "computed clock_id: {}, log_filter: {}",
-                    clock_id,
-                    tracing_args.log_filter
-                );
-                (clock_id, Some(filter))
-            }
-            None => (libc::CLOCK_MONOTONIC, None),
-        };
-
-        Self {
-            producer,
-            clock_id,
-            env_filter,
-            thread_names_sent: Arc::new(ThreadLocal::new()),
-        }
-    }
-
-    pub(crate) fn clock_id(&self) -> libc::clockid_t {
-        self.clock_id
-    }
-
-    pub(crate) fn env_filter(&self) -> Option<&EnvFilter> {
-        self.env_filter.as_ref()
-    }
-
-    pub(crate) fn submit_with_thread_name(&self, event: &Event) -> Result<()> {
-        let thread_sent = self
-            .thread_names_sent
-            .get_or(|| std::cell::Cell::new(false));
-
-        if !thread_sent.get() {
-            if let Some(thread_name) = std::thread::current().name() {
-                let thread_event = protocol::Event::ThreadName(protocol::ThreadName {
-                    name: thread_name,
-                    tid: unsafe { libc::syscall(libc::SYS_gettid) } as i32,
-                    pid: std::process::id() as i32,
-                });
-
-                if let Err(e) = self.producer.submit(&thread_event) {
-                    tracing::debug!(error = ?e, "failed to submit thread name event");
-                }
-            }
-            thread_sent.set(true);
-        }
-
-        self.producer.submit(event)
-    }
-}
+use crate::Result;
 
 pub struct AgentBuilder {
     socket_path: String,
@@ -109,16 +37,13 @@ impl AgentBuilder {
     }
 }
 
-/// Server that listens for client connections and receives events.
 pub struct Agent {
-    producer_state: Arc<ArcSwapOption<ProducerState>>,
     socket_thread: Option<JoinHandle<Result<()>>>,
     socket_path: String,
     shutdown: Arc<AtomicBool>,
 }
 
 impl Agent {
-    /// Create a new agent listening on the given socket path.
     pub fn new(socket_path: String) -> Result<Self> {
         Self::with_timeout(
             socket_path,
@@ -126,7 +51,6 @@ impl Agent {
         )
     }
 
-    /// Create a new agent with custom client keepalive timeout.
     pub fn with_timeout(socket_path: String, timeout_ms: u16) -> Result<Self> {
         Self::internal_new(socket_path, timeout_ms, None)
     }
@@ -136,60 +60,21 @@ impl Agent {
         timeout_ms: u16,
         tracing_extension: Option<Box<dyn Extension<Args = ArchivedTracingArgs>>>,
     ) -> Result<Self> {
-        let producer_state = Arc::new(ArcSwapOption::empty());
-        let producer_state_clone = producer_state.clone();
         let socket_path_clone = socket_path.clone();
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
 
-        let agent_state = crate::agent_state::AgentState::new(
-            timeout_ms,
-            producer_state_clone.clone(),
-            tracing_extension,
-        );
+        let agent_state = crate::agent_state::AgentState::new(timeout_ms, tracing_extension);
 
         let socket_thread = thread::Builder::new()
             .name("manytrace-agent".to_string())
             .spawn(move || epoll_listener_thread(socket_path_clone, shutdown_clone, agent_state))?;
 
         Ok(Agent {
-            producer_state,
             socket_thread: Some(socket_thread),
             socket_path,
             shutdown,
         })
-    }
-
-    /// Check if a client is currently connected.
-    pub fn enabled(&self) -> bool {
-        self.producer_state.load().is_some()
-    }
-
-    /// Submit an event to connected clients.
-    pub fn submit(&self, event: &Event) -> Result<()> {
-        let producer_state = self.producer_state.load();
-        match producer_state.as_ref() {
-            Some(state) => state.submit_with_thread_name(event),
-            None => Err(crate::AgentError::NotEnabled),
-        }
-    }
-
-    /// Get the current clock ID if a client is connected.
-    pub fn clock_id(&self) -> libc::clockid_t {
-        self.producer_state
-            .load()
-            .as_ref()
-            .map(|s| s.clock_id())
-            .unwrap_or(libc::CLOCK_MONOTONIC)
-    }
-
-    /// Get the current environment filter if a client is connected.
-    pub fn env_filter<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnOnce(&EnvFilter) -> R,
-    {
-        let guard = self.producer_state.load();
-        guard.as_ref().and_then(|s| s.env_filter()).map(f)
     }
 
     /// Gracefully shut down the agent and wait for thread termination.
@@ -215,7 +100,7 @@ impl Drop for Agent {
 mod tests {
     use super::*;
     use crate::{AgentClient, Consumer};
-    use protocol::{Counter, Event, Labels};
+    use protocol::{Event, Labels};
     use rstest::*;
     use std::borrow::Cow;
     use std::sync::Once;
@@ -227,12 +112,12 @@ mod tests {
 
     fn init_tracing() {
         INIT.call_once(|| {
-            tracing_subscriber::fmt()
+            let _ = tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::try_from_default_env()
                         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
                 )
-                .init();
+                .try_init();
         });
     }
 
@@ -270,8 +155,7 @@ mod tests {
     #[rstest]
     fn test_agent_creation(temp_socket_path: String) {
         init_tracing();
-        let agent = Agent::new(temp_socket_path.clone()).unwrap();
-        assert!(!agent.enabled());
+        let _agent = Agent::new(temp_socket_path.clone()).unwrap();
 
         wait_for_socket(&temp_socket_path);
 
@@ -326,33 +210,45 @@ mod tests {
     #[rstest]
     fn test_agent_submit_event(temp_socket_path: String, consumer: Consumer) {
         init_tracing();
-        let agent = Agent::new(temp_socket_path.clone()).unwrap();
+
+        let (ext, _started, _stopped, events) = TestExtension::new(false);
+        let events_clone = events.clone();
+
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            let event_name = "test_event_submitted";
+            events_clone.lock().unwrap().push(event_name.to_string());
+        });
+
+        let _agent = AgentBuilder::new(temp_socket_path.clone())
+            .register_tracing(Box::new(ext))
+            .build()
+            .unwrap();
 
         wait_for_socket(&temp_socket_path);
 
         let mut client = AgentClient::new(temp_socket_path);
         client.start(&consumer, "debug".to_string()).unwrap();
 
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(100));
 
-        let event = Event::Counter(Counter {
-            name: "test_metric",
-            value: 123.456,
-            timestamp: 1234567890,
-            tid: 1,
-            pid: 2,
-            labels: Cow::Owned(Labels::new()),
-            unit: None,
-        });
-
-        agent.submit(&event).unwrap();
+        let submitted_events = events.lock().unwrap();
+        assert!(submitted_events.contains(&"extension_started".to_string()));
+        assert!(submitted_events.contains(&"test_event_submitted".to_string()));
     }
 
     #[rstest]
     fn test_keepalive_timeout(temp_socket_path: String, consumer: Consumer) {
         init_tracing();
         let timeout_ms = 100;
-        let agent = Agent::with_timeout(temp_socket_path.clone(), timeout_ms).unwrap();
+
+        let (ext, started, stopped, _events) = TestExtension::new(false);
+
+        let _agent = AgentBuilder::new(temp_socket_path.clone())
+            .with_timeout(timeout_ms)
+            .register_tracing(Box::new(ext))
+            .build()
+            .unwrap();
 
         wait_for_socket(&temp_socket_path);
 
@@ -361,22 +257,12 @@ mod tests {
 
         thread::sleep(Duration::from_millis(10));
 
-        let event = Event::Counter(Counter {
-            name: "test_metric",
-            value: 123.456,
-            timestamp: 1234567890,
-            tid: 1,
-            pid: 2,
-            labels: Cow::Owned(Labels::new()),
-            unit: None,
-        });
-
-        agent.submit(&event).unwrap();
+        assert!(*started.lock().unwrap());
+        assert!(!*stopped.lock().unwrap());
 
         thread::sleep(Duration::from_millis(timeout_ms as u64 * 2));
 
-        let result = agent.submit(&event);
-        assert!(result.is_err());
+        assert!(*stopped.lock().unwrap());
     }
 
     #[rstest]

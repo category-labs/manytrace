@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use thiserror::Error;
+use thread_local::ThreadLocal;
 
 use crate::{AgentError, Producer};
 
@@ -9,16 +10,40 @@ pub enum ExtensionError {
     ValidationError(String),
 }
 
+#[derive(Clone)]
 pub struct AgentHandle {
     producer: Arc<Producer>,
+    thread_names_sent: Arc<ThreadLocal<std::cell::Cell<bool>>>,
 }
 
 impl AgentHandle {
     pub(crate) fn new(producer: Arc<Producer>) -> Self {
-        Self { producer }
+        Self {
+            producer,
+            thread_names_sent: Arc::new(ThreadLocal::new()),
+        }
     }
 
     pub fn submit(&self, event: &protocol::Event) -> Result<(), AgentError> {
+        let thread_sent = self
+            .thread_names_sent
+            .get_or(|| std::cell::Cell::new(false));
+
+        if !thread_sent.get() {
+            if let Some(thread_name) = std::thread::current().name() {
+                let thread_event = protocol::Event::ThreadName(protocol::ThreadName {
+                    name: thread_name,
+                    tid: unsafe { libc::syscall(libc::SYS_gettid) } as i32,
+                    pid: std::process::id() as i32,
+                });
+
+                if let Err(e) = self.producer.submit(&thread_event) {
+                    tracing::debug!(error = ?e, "failed to submit thread name event");
+                }
+            }
+            thread_sent.set(true);
+        }
+
         self.producer.submit(event)
     }
 }

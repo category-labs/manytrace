@@ -1,4 +1,4 @@
-use agent::{Agent, AgentClient, Consumer};
+use agent::{Agent, AgentBuilder, AgentClient, Consumer};
 use rstest::{fixture, rstest};
 use std::sync::Arc;
 use std::thread::sleep;
@@ -11,8 +11,9 @@ use tracing_subscriber::Registry;
 struct TestSetup {
     consumer: Consumer,
     client: AgentClient,
-    agent: Arc<Agent>,
+    extension: Arc<crate::TracingExtension>,
     _temp_dir: TempDir,
+    _agent: Agent,
 }
 
 #[fixture]
@@ -21,8 +22,11 @@ fn setup() -> TestSetup {
     let socket_path = temp_dir.path().join("test.sock");
     let socket_path_str = socket_path.to_string_lossy().to_string();
 
-    let agent = Agent::new(socket_path_str.clone()).expect("failed to create agent");
-    let agent_arc = Arc::new(agent);
+    let extension = Arc::new(crate::TracingExtension::new());
+    let agent = AgentBuilder::new(socket_path_str.clone())
+        .register_tracing(Box::new((*extension).clone()))
+        .build()
+        .expect("failed to create agent");
 
     let consumer = Consumer::new(1024 * 1024).expect("failed to create consumer");
     let mut client = AgentClient::new(socket_path_str);
@@ -39,13 +43,12 @@ fn setup() -> TestSetup {
         }
     }
 
-    // Wait for agent to be enabled
     for i in 0..10 {
-        if agent_arc.enabled() {
+        if extension.is_active() {
             break;
         }
         if i == 9 {
-            panic!("Agent never became enabled");
+            panic!("Extension never became active");
         }
         sleep(Duration::from_millis(50));
     }
@@ -53,19 +56,19 @@ fn setup() -> TestSetup {
     TestSetup {
         consumer,
         client,
-        agent: agent_arc,
+        extension,
         _temp_dir: temp_dir,
+        _agent: agent,
     }
 }
 
 #[rstest]
 fn test_basic_span(mut setup: TestSetup) {
-    let layer = crate::ManytraceLayer::new(setup.agent);
+    let layer = crate::ManytraceLayer::new(setup.extension);
     let subscriber = Registry::default().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         let span = info_span!("test_span");
         let _guard = span.enter();
-        // Span should be emitted when dropped
     });
 
     setup
@@ -94,7 +97,7 @@ fn test_basic_span(mut setup: TestSetup) {
 
 #[rstest]
 fn test_span_with_fields(mut setup: TestSetup) {
-    let layer = crate::ManytraceLayer::new(setup.agent);
+    let layer = crate::ManytraceLayer::new(setup.extension);
     let subscriber = Registry::default().with(layer);
     tracing::subscriber::with_default(subscriber, || {
         let span = tracing::info_span!("my_span", answer = 42, name = "test");
@@ -132,7 +135,7 @@ fn test_span_with_fields(mut setup: TestSetup) {
 
 #[rstest]
 fn test_thread_process_names(mut setup: TestSetup) {
-    let layer = crate::ManytraceLayer::new(setup.agent);
+    let layer = crate::ManytraceLayer::new(setup.extension);
     let subscriber = Registry::default().with(layer);
 
     let handle = std::thread::Builder::new()

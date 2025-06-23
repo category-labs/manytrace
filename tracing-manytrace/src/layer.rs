@@ -1,4 +1,4 @@
-use agent::Agent;
+use crate::TracingExtension;
 use protocol::{Event, Instant, Labels, Span};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -24,15 +24,15 @@ fn get_timestamp(clock_id: libc::clockid_t) -> u64 {
 }
 
 pub struct ManytraceLayer {
-    agent: Arc<Agent>,
+    extension: Arc<TracingExtension>,
     thread_ids: Arc<ThreadLocal<std::cell::Cell<i32>>>,
     process_id: i32,
 }
 
 impl ManytraceLayer {
-    pub fn new(agent: Arc<Agent>) -> Self {
+    pub fn new(extension: Arc<TracingExtension>) -> Self {
         Self {
-            agent,
+            extension,
             thread_ids: Arc::new(ThreadLocal::new()),
             process_id: std::process::id() as i32,
         }
@@ -53,8 +53,8 @@ impl ManytraceLayer {
     where
         S: Subscriber,
     {
-        self.agent
-            .env_filter(|filter| filter.enabled(metadata, ctx))
+        self.extension
+            .with_env_filter(|filter| filter.enabled(metadata, ctx))
             .unwrap_or(true)
     }
 }
@@ -64,7 +64,7 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        if !self.agent.enabled() {
+        if !self.extension.is_active() {
             return;
         }
 
@@ -84,19 +84,19 @@ where
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
-        if !self.agent.enabled() {
+        if !self.extension.is_active() {
             return;
         }
 
         if let Some(span) = ctx.span(id) {
             if let Some(span_data) = span.extensions_mut().get_mut::<SpanData>() {
-                span_data.start_timestamp = get_timestamp(self.agent.clock_id());
+                span_data.start_timestamp = get_timestamp(self.extension.clock_id());
             }
         }
     }
 
     fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
-        if !self.agent.enabled() {
+        if !self.extension.is_active() {
             return;
         }
 
@@ -108,18 +108,18 @@ where
                     name: metadata.name(),
                     span_id,
                     start_timestamp: span_data.start_timestamp,
-                    end_timestamp: get_timestamp(self.agent.clock_id()),
+                    end_timestamp: get_timestamp(self.extension.clock_id()),
                     tid: self.get_thread_id(),
                     pid: self.get_process_id(),
                     labels: Cow::Borrowed(&span_data.labels),
                 };
-                let _ = self.agent.submit(&Event::Span(span_event));
+                let _ = self.extension.submit(&Event::Span(span_event));
             }
         }
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
-        if !self.agent.enabled() {
+        if !self.extension.is_active() {
             return;
         }
 
@@ -134,7 +134,7 @@ where
             start_timestamp: 0,
         };
         event.record(&mut span_data);
-        let timestamp = get_timestamp(self.agent.clock_id());
+        let timestamp = get_timestamp(self.extension.clock_id());
         let instant_event = Instant {
             name: metadata.name(),
             timestamp,
@@ -142,6 +142,6 @@ where
             pid: self.get_process_id(),
             labels: Cow::Borrowed(&span_data.labels),
         };
-        let _ = self.agent.submit(&Event::Instant(instant_event));
+        let _ = self.extension.submit(&Event::Instant(instant_event));
     }
 }

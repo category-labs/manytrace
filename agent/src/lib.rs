@@ -4,7 +4,6 @@
 //!
 //! ```no_run
 //! use agent::{Agent, AgentClient, Consumer};
-//! use protocol::{Event, Counter, Labels, LogLevel};
 //!
 //! // Server side - receives events
 //! let agent = Agent::new("/tmp/agent.sock".to_string())?;
@@ -14,17 +13,6 @@
 //! let mut client = AgentClient::new("/tmp/agent.sock".to_string());
 //! client.start(&consumer, "debug".to_owned())?;
 //!
-//! // Submit events through the agent
-//! let event = Event::Counter(Counter {
-//!     name: "requests",
-//!     value: 1.0,
-//!     timestamp: 123456789,
-//!     tid: 1,
-//!     pid: 100,
-//!     labels: std::borrow::Cow::Owned(Labels::new()),
-//!     unit: None,
-//! });
-//! agent.submit(&event)?;
 //!
 //! // Send periodic keepalive to prevent timeout
 //! client.send_continue()?;
