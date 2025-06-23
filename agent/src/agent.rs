@@ -1,5 +1,5 @@
 use arc_swap::ArcSwapOption;
-use protocol::{Args, Event, TimestampType};
+use protocol::{ArchivedTracingArgs, Args, Event, TimestampType};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -7,6 +7,7 @@ use thread_local::ThreadLocal;
 use tracing_subscriber::EnvFilter;
 
 use crate::epoll_thread::epoll_listener_thread;
+use crate::extension::Extension;
 use crate::{Producer, Result};
 
 /// Producer state containing producer and thread tracking.
@@ -78,6 +79,36 @@ impl ProducerState {
     }
 }
 
+pub struct AgentBuilder {
+    socket_path: String,
+    timeout_ms: u16,
+    tracing_extension: Option<Box<dyn Extension<Args = ArchivedTracingArgs>>>,
+}
+
+impl AgentBuilder {
+    pub fn new(socket_path: String) -> Self {
+        Self {
+            socket_path,
+            timeout_ms: (crate::agent_state::CLIENT_TIMEOUT_NS / 1_000_000) as u16,
+            tracing_extension: None,
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout_ms: u16) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    pub fn register_tracing(mut self, ext: Box<dyn Extension<Args = ArchivedTracingArgs>>) -> Self {
+        self.tracing_extension = Some(ext);
+        self
+    }
+
+    pub fn build(self) -> Result<Agent> {
+        Agent::internal_new(self.socket_path, self.timeout_ms, self.tracing_extension)
+    }
+}
+
 /// Server that listens for client connections and receives events.
 pub struct Agent {
     producer_state: Arc<ArcSwapOption<ProducerState>>,
@@ -97,22 +128,29 @@ impl Agent {
 
     /// Create a new agent with custom client keepalive timeout.
     pub fn with_timeout(socket_path: String, timeout_ms: u16) -> Result<Self> {
+        Self::internal_new(socket_path, timeout_ms, None)
+    }
+
+    fn internal_new(
+        socket_path: String,
+        timeout_ms: u16,
+        tracing_extension: Option<Box<dyn Extension<Args = ArchivedTracingArgs>>>,
+    ) -> Result<Self> {
         let producer_state = Arc::new(ArcSwapOption::empty());
         let producer_state_clone = producer_state.clone();
         let socket_path_clone = socket_path.clone();
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
 
+        let agent_state = crate::agent_state::AgentState::new(
+            timeout_ms,
+            producer_state_clone.clone(),
+            tracing_extension,
+        );
+
         let socket_thread = thread::Builder::new()
             .name("manytrace-agent".to_string())
-            .spawn(move || {
-                epoll_listener_thread(
-                    socket_path_clone,
-                    producer_state_clone,
-                    shutdown_clone,
-                    timeout_ms,
-                )
-            })?;
+            .spawn(move || epoll_listener_thread(socket_path_clone, shutdown_clone, agent_state))?;
 
         Ok(Agent {
             producer_state,
@@ -354,5 +392,132 @@ mod tests {
         thread::sleep(Duration::from_millis(10));
 
         agent.wait_terminated().unwrap();
+    }
+
+    use crate::extension::{AgentHandle, Extension, ExtensionError};
+    use protocol::ArchivedTracingArgs;
+    use std::sync::Mutex;
+
+    struct TestExtension {
+        started: Arc<Mutex<bool>>,
+        stopped: Arc<Mutex<bool>>,
+        events_submitted: Arc<Mutex<Vec<String>>>,
+        fail_on_start: bool,
+    }
+
+    type TestExtensionState = (
+        TestExtension,
+        Arc<Mutex<bool>>,
+        Arc<Mutex<bool>>,
+        Arc<Mutex<Vec<String>>>,
+    );
+
+    impl TestExtension {
+        fn new(fail_on_start: bool) -> TestExtensionState {
+            let started = Arc::new(Mutex::new(false));
+            let stopped = Arc::new(Mutex::new(false));
+            let events_submitted = Arc::new(Mutex::new(Vec::new()));
+
+            (
+                Self {
+                    started: started.clone(),
+                    stopped: stopped.clone(),
+                    events_submitted: events_submitted.clone(),
+                    fail_on_start,
+                },
+                started,
+                stopped,
+                events_submitted,
+            )
+        }
+    }
+
+    impl Extension for TestExtension {
+        type Args = ArchivedTracingArgs;
+
+        fn start(
+            &self,
+            _args: &ArchivedTracingArgs,
+            handle: &AgentHandle,
+        ) -> std::result::Result<(), ExtensionError> {
+            if self.fail_on_start {
+                return Err(ExtensionError::ValidationError(
+                    "test error from extension".to_string(),
+                ));
+            }
+
+            *self.started.lock().unwrap() = true;
+
+            let event = Event::Instant(protocol::Instant {
+                name: "extension_started",
+                timestamp: 1000,
+                tid: 1,
+                pid: 1,
+                labels: Cow::Owned(Labels::new()),
+            });
+
+            if let Ok(()) = handle.submit(&event) {
+                self.events_submitted
+                    .lock()
+                    .unwrap()
+                    .push("extension_started".to_string());
+            }
+
+            Ok(())
+        }
+
+        fn stop(&self) -> std::result::Result<(), ExtensionError> {
+            *self.stopped.lock().unwrap() = true;
+            Ok(())
+        }
+    }
+
+    #[rstest]
+    fn test_extension_start_stop(temp_socket_path: String, consumer: Consumer) {
+        init_tracing();
+
+        let (ext, started, stopped, _events) = TestExtension::new(false);
+
+        let _agent = AgentBuilder::new(temp_socket_path.clone())
+            .register_tracing(Box::new(ext))
+            .build()
+            .unwrap();
+
+        wait_for_socket(&temp_socket_path);
+
+        let mut client = AgentClient::new(temp_socket_path.clone());
+        client.start(&consumer, "debug".to_string()).unwrap();
+
+        assert!(*started.lock().unwrap());
+        assert!(!*stopped.lock().unwrap());
+
+        client.stop().unwrap();
+        drop(client);
+
+        thread::sleep(Duration::from_millis(100));
+
+        assert!(*stopped.lock().unwrap());
+    }
+
+    #[rstest]
+    fn test_extension_error_propagation(temp_socket_path: String, consumer: Consumer) {
+        init_tracing();
+
+        let (ext, started, _stopped, _events) = TestExtension::new(true);
+
+        let _agent = AgentBuilder::new(temp_socket_path.clone())
+            .register_tracing(Box::new(ext))
+            .build()
+            .unwrap();
+
+        wait_for_socket(&temp_socket_path);
+
+        let mut client = AgentClient::new(temp_socket_path);
+        let result = client.start(&consumer, "debug".to_string());
+
+        assert!(result.is_err());
+        assert!(!client.enabled());
+
+        assert!(!*started.lock().unwrap());
     }
 }

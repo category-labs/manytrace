@@ -1,4 +1,3 @@
-use arc_swap::ArcSwapOption;
 use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags, EpollTimeout};
 use nix::sys::socket::{recvmsg, sendmsg, ControlMessageOwned, MsgFlags};
 use std::collections::{HashMap, VecDeque};
@@ -8,7 +7,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::agent::ProducerState;
 use crate::agent_state::{Action, AgentState};
 use crate::Result;
 
@@ -16,9 +14,8 @@ const LISTENER_TOKEN: u64 = 0;
 
 pub fn epoll_listener_thread(
     socket_path: String,
-    producer_state: Arc<ArcSwapOption<ProducerState>>,
     shutdown: Arc<AtomicBool>,
-    timeout_ms: u16,
+    mut agent_state: AgentState,
 ) -> Result<()> {
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path)?;
@@ -33,8 +30,7 @@ pub fn epoll_listener_thread(
     )?;
 
     let mut events = vec![EpollEvent::empty(); 10];
-    let mut agent_state = AgentState::new(timeout_ms, producer_state.clone());
-    let timeout = EpollTimeout::from(timeout_ms);
+    let timeout = EpollTimeout::from(agent_state.timeout_ms());
     let mut client_sockets: HashMap<u64, UnixStream> = HashMap::new();
 
     loop {

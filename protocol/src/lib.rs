@@ -214,18 +214,12 @@ pub enum Args {
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[rkyv(compare(PartialEq))]
-pub enum ControlMessage<'a> {
-    Start {
-        buffer_size: u64,
-        args: Args,
-    },
+pub enum ControlMessage {
+    Start { buffer_size: u64, args: Args },
     Stop,
     Continue,
     Ack,
-    Nack {
-        #[rkyv(with = InlineAsBox)]
-        error: &'a str,
-    },
+    Nack { error: String },
 }
 
 pub struct CountingWriter {
@@ -679,7 +673,7 @@ mod tests {
             ControlMessage::Continue,
             ControlMessage::Ack,
             ControlMessage::Nack {
-                error: "connection failed",
+                error: "connection failed".to_owned(),
             },
         ];
 

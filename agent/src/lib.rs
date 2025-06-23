@@ -12,7 +12,7 @@
 //! // Client side - sends events  
 //! let mut consumer = Consumer::new(1024 * 1024)?;
 //! let mut client = AgentClient::new("/tmp/agent.sock".to_string());
-//! client.start(&consumer, LogLevel::Debug)?;
+//! client.start(&consumer, "debug".to_owned())?;
 //!
 //! // Submit events through the agent
 //! let event = Event::Counter(Counter {
@@ -22,6 +22,7 @@
 //!     tid: 1,
 //!     pid: 100,
 //!     labels: std::borrow::Cow::Owned(Labels::new()),
+//!     unit: None,
 //! });
 //! agent.submit(&event)?;
 //!
@@ -43,8 +44,9 @@
 use mpscbuf::MpscBufError;
 use thiserror::Error;
 
-pub use agent::Agent;
+pub use agent::{Agent, AgentBuilder};
 pub use client::AgentClient;
+pub use extension::{AgentHandle, Extension, ExtensionError};
 pub use mpsc::{Consumer, Producer};
 
 #[derive(Error, Debug)]
@@ -69,4 +71,5 @@ pub(crate) mod agent;
 pub(crate) mod agent_state;
 pub(crate) mod client;
 pub(crate) mod epoll_thread;
+pub(crate) mod extension;
 pub(crate) mod mpsc;

@@ -1,19 +1,20 @@
 use arc_swap::ArcSwapOption;
 use mpscbuf::{Producer as MpscProducer, WakeupStrategy};
-use protocol::{ControlMessage, TimestampType};
+use protocol::{ArchivedTracingArgs, ControlMessage, TimestampType};
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
 use crate::agent::ProducerState;
+use crate::extension::{AgentHandle, Extension, ExtensionError};
 use crate::{AgentError, Producer};
 
 #[derive(Debug)]
 pub(crate) enum Action {
     SendMessage {
         client_id: u64,
-        message: ControlMessage<'static>,
+        message: ControlMessage,
     },
     DeleteEpoll {
         client_id: u64,
@@ -67,10 +68,16 @@ pub(crate) struct AgentState {
     ctx: AgentContext,
     timeout_ns: u64,
     producer_state: Arc<ArcSwapOption<ProducerState>>,
+    tracing_extension: Option<Box<dyn Extension<Args = ArchivedTracingArgs>>>,
+    extension_active: bool,
 }
 
 impl AgentState {
-    pub(crate) fn new(timeout_ms: u16, producer_state: Arc<ArcSwapOption<ProducerState>>) -> Self {
+    pub(crate) fn new(
+        timeout_ms: u16,
+        producer_state: Arc<ArcSwapOption<ProducerState>>,
+        tracing_extension: Option<Box<dyn Extension<Args = ArchivedTracingArgs>>>,
+    ) -> Self {
         AgentState {
             clients: HashMap::new(),
             started_client: None,
@@ -80,6 +87,8 @@ impl AgentState {
             },
             timeout_ns: timeout_ms as u64 * 1_000_000,
             producer_state,
+            tracing_extension,
+            extension_active: false,
         }
     }
 
@@ -93,6 +102,10 @@ impl AgentState {
         id
     }
 
+    pub(crate) fn timeout_ms(&self) -> u16 {
+        (self.timeout_ns / 1_000_000) as u16
+    }
+
     pub(crate) fn register_client(&mut self, client_id: u64, _actions: &mut VecDeque<Action>) {
         let client = AgentClientState::new(client_id);
         self.clients.insert(client_id, client);
@@ -101,6 +114,16 @@ impl AgentState {
 
     pub(crate) fn handle_disconnect(&mut self, client_id: u64, actions: &mut VecDeque<Action>) {
         if self.started_client == Some(client_id) {
+            if self.extension_active {
+                if let Some(ref ext) = self.tracing_extension {
+                    match ext.stop() {
+                        Ok(()) => debug!(client_id, "extension stopped successfully"),
+                        Err(e) => debug!(client_id, error = ?e, "extension stop failed"),
+                    }
+                    self.extension_active = false;
+                }
+            }
+
             self.ctx.another_started = false;
             self.started_client = None;
             self.producer_state.store(None);
@@ -125,7 +148,9 @@ impl AgentState {
                             let error_msg = "another client already started";
                             actions.push_back(Action::SendMessage {
                                 client_id,
-                                message: ControlMessage::Nack { error: error_msg },
+                                message: ControlMessage::Nack {
+                                    error: error_msg.to_owned(),
+                                },
                             });
                             debug!("queued nack - another client already started");
                             return;
@@ -157,7 +182,7 @@ impl AgentState {
                                     actions.push_back(Action::SendMessage {
                                         client_id,
                                         message: ControlMessage::Nack {
-                                            error: "invalid log filter",
+                                            error: "invalid log filter".to_owned(),
                                         },
                                     });
                                     return;
@@ -174,7 +199,7 @@ impl AgentState {
                             actions.push_back(Action::SendMessage {
                                 client_id,
                                 message: ControlMessage::Nack {
-                                    error: "missing file descriptors",
+                                    error: "missing file descriptors".to_owned(),
                                 },
                             });
                             return;
@@ -184,7 +209,7 @@ impl AgentState {
                             actions.push_back(Action::SendMessage {
                                 client_id,
                                 message: ControlMessage::Nack {
-                                    error: "invalid file descriptors",
+                                    error: "invalid file descriptors".to_owned(),
                                 },
                             });
                             return;
@@ -219,8 +244,33 @@ impl AgentState {
                                     }
                                 }
 
-                                let producer_state =
-                                    Arc::new(ProducerState::new(producer, deserialized_args));
+                                let producer_state = Arc::new(ProducerState::new(
+                                    producer.clone(),
+                                    deserialized_args,
+                                ));
+
+                                if let Some(ref ext) = self.tracing_extension {
+                                    let protocol::ArchivedArgs::Tracing(tracing_args) = args;
+                                    let handle = AgentHandle::new(producer);
+                                    debug!(client_id, "starting extension");
+                                    match ext.start(tracing_args, &handle) {
+                                        Ok(()) => {
+                                            self.extension_active = true;
+                                            debug!(client_id, "extension started successfully");
+                                        }
+                                        Err(e) => {
+                                            let ExtensionError::ValidationError(error_msg) = e;
+                                            actions.push_back(Action::SendMessage {
+                                                client_id,
+                                                message: ControlMessage::Nack {
+                                                    error: error_msg.clone(),
+                                                },
+                                            });
+                                            debug!(client_id, error = %error_msg, "extension start failed");
+                                            return;
+                                        }
+                                    }
+                                }
 
                                 debug!(buffer_size, client_id, "producer initialized");
 
@@ -278,12 +328,7 @@ impl AgentState {
                     client.timestamp_ns = get_timestamp_ns();
                 }
                 MessageResult::Disconnect | MessageResult::Error(_) => {
-                    if self.started_client == Some(client_id) {
-                        self.ctx.another_started = false;
-                        self.started_client = None;
-                        self.producer_state.store(None);
-                    }
-                    actions.push_back(Action::DeleteEpoll { client_id });
+                    self.handle_disconnect(client_id, actions);
                 }
             }
         }
@@ -340,6 +385,15 @@ impl AgentState {
                         client_id: *client_id,
                     });
                 }
+                if self.extension_active {
+                    if let Some(ref ext) = self.tracing_extension {
+                        match ext.stop() {
+                            Ok(()) => debug!(client_id, "extension stopped successfully"),
+                            Err(e) => debug!(client_id, error = ?e, "extension stop failed"),
+                        }
+                        self.extension_active = false;
+                    }
+                }
                 self.started_client = None;
                 self.producer_state.store(None);
                 self.ctx.another_started = false;
@@ -375,12 +429,12 @@ mod tests {
 
     fn init_tracing() {
         INIT.call_once(|| {
-            tracing_subscriber::fmt()
+            let _ = tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::try_from_default_env()
                         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
                 )
-                .init();
+                .try_init();
         });
     }
 
@@ -441,7 +495,7 @@ mod tests {
     #[rstest]
     fn test_agent_state_new() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let agent_state = AgentState::new(2000, producer_state);
+        let agent_state = AgentState::new(2000, producer_state, None);
 
         assert!(agent_state.clients.is_empty());
         assert!(agent_state.started_client.is_none());
@@ -453,7 +507,7 @@ mod tests {
     #[rstest]
     fn test_register_client() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut agent_state = AgentState::new(2000, producer_state, None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
@@ -467,7 +521,7 @@ mod tests {
     #[rstest]
     fn test_accept_multiple_connections() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut agent_state = AgentState::new(2000, producer_state, None);
 
         let temp_dir1 = TempDir::new().unwrap();
         let socket_path1 = temp_dir1.path().join("test1.sock");
@@ -501,7 +555,7 @@ mod tests {
     #[rstest]
     fn test_timer_no_clients() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut agent_state = AgentState::new(2000, producer_state, None);
         let mut actions = VecDeque::new();
 
         agent_state.timer(&mut actions);
@@ -512,7 +566,7 @@ mod tests {
     #[rstest]
     fn test_timer_pending_client_not_timed_out() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut agent_state = AgentState::new(2000, producer_state, None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
@@ -528,7 +582,7 @@ mod tests {
     #[rstest]
     fn test_handle_disconnect() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut agent_state = AgentState::new(2000, producer_state, None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
@@ -548,7 +602,7 @@ mod tests {
     #[rstest]
     fn test_handle_message_pending_start_success(test_consumer: Consumer) {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state.clone());
+        let mut agent_state = AgentState::new(2000, producer_state.clone(), None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
@@ -594,7 +648,7 @@ mod tests {
     #[rstest]
     fn test_handle_message_pending_start_another_started(test_consumer: Consumer) {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut agent_state = AgentState::new(2000, producer_state, None);
         let mut actions = VecDeque::new();
 
         agent_state.ctx.another_started = true;
@@ -639,7 +693,7 @@ mod tests {
     #[rstest]
     fn test_handle_message_pending_start_invalid_filter(test_consumer: Consumer) {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut agent_state = AgentState::new(2000, producer_state, None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
@@ -679,7 +733,7 @@ mod tests {
     #[rstest]
     fn test_handle_message_pending_start_missing_fds() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut agent_state = AgentState::new(2000, producer_state, None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
@@ -714,7 +768,7 @@ mod tests {
     #[rstest]
     fn test_handle_message_started_continue() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut agent_state = AgentState::new(2000, producer_state, None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
@@ -748,7 +802,7 @@ mod tests {
     #[rstest]
     fn test_handle_message_started_stop() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut agent_state = AgentState::new(2000, producer_state, None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
@@ -782,7 +836,7 @@ mod tests {
     #[rstest]
     fn test_timer_pending_client_timeout() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2, producer_state);
+        let mut agent_state = AgentState::new(2, producer_state, None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
@@ -801,7 +855,7 @@ mod tests {
     #[rstest]
     fn test_timer_started_client_timeout() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2, producer_state.clone());
+        let mut agent_state = AgentState::new(2, producer_state.clone(), None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
@@ -827,7 +881,7 @@ mod tests {
     fn test_full_client_lifecycle(test_consumer: Consumer) {
         init_tracing();
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state.clone());
+        let mut agent_state = AgentState::new(2000, producer_state.clone(), None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
@@ -916,7 +970,7 @@ mod tests {
     #[rstest]
     fn test_multiple_clients_only_one_starts(test_consumer: Consumer) {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state.clone());
+        let mut agent_state = AgentState::new(2000, producer_state.clone(), None);
         let mut actions = VecDeque::new();
 
         let client1_id = agent_state.get_next_client_id();
@@ -998,7 +1052,7 @@ mod tests {
     #[rstest]
     fn test_invalid_fd_handling() {
         let producer_state = Arc::new(ArcSwapOption::empty());
-        let mut agent_state = AgentState::new(2000, producer_state);
+        let mut agent_state = AgentState::new(2000, producer_state, None);
         let mut actions = VecDeque::new();
 
         let client_id = agent_state.get_next_client_id();
