@@ -10,6 +10,8 @@ use rkyv::ser::{Positional, Writer};
 use rkyv::with::{AsOwned, Identity, InlineAsBox, Map, MapKV};
 use rkyv::{Archive, Archived, Deserialize, Serialize};
 
+pub const VERSION: &str = "0.1";
+
 pub type StreamId = u16;
 
 pub struct StreamIdAllocator {
@@ -257,13 +259,22 @@ impl Args {
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[rkyv(compare(PartialEq))]
 pub enum ControlMessage {
-    Start { buffer_size: u64, args: Args },
+    Start {
+        buffer_size: u64,
+        args: Args,
+    },
     Stop,
     Continue,
     Ack,
-    Nack { error: String },
+    Nack {
+        error: String,
+    },
+    Version,
+    VersionResponse {
+        #[rkyv(with = InlineAsBox)]
+        version: &'static str,
+    },
 }
 
 pub struct CountingWriter {
@@ -1000,6 +1011,8 @@ mod tests {
             ControlMessage::Nack {
                 error: "connection failed".to_owned(),
             },
+            ControlMessage::Version,
+            ControlMessage::VersionResponse { version: VERSION },
         ];
 
         for msg in messages {
@@ -1043,6 +1056,15 @@ mod tests {
                     ArchivedControlMessage::Nack { error: arch_error },
                 ) => {
                     assert_eq!(error.as_bytes(), arch_error.as_bytes());
+                }
+                (ControlMessage::Version, ArchivedControlMessage::Version) => {}
+                (
+                    ControlMessage::VersionResponse { version },
+                    ArchivedControlMessage::VersionResponse {
+                        version: arch_version,
+                    },
+                ) => {
+                    assert_eq!(version.as_bytes(), arch_version.as_bytes());
                 }
                 _ => panic!("mismatched control message variants"),
             }

@@ -280,6 +280,65 @@ mod tests {
         agent.wait_terminated().unwrap();
     }
 
+    #[rstest]
+    fn test_version_rpc_before_start(temp_socket_path: String) {
+        init_tracing();
+        let _agent = Agent::new(temp_socket_path.clone()).unwrap();
+
+        wait_for_socket(&temp_socket_path);
+
+        let client = AgentClient::new(temp_socket_path);
+        let version = client.check_version().unwrap();
+        assert_eq!(version, protocol::VERSION);
+    }
+
+    #[rstest]
+    fn test_version_rpc_after_start(temp_socket_path: String, consumer: Consumer) {
+        init_tracing();
+        let _agent = Agent::new(temp_socket_path.clone()).unwrap();
+
+        wait_for_socket(&temp_socket_path);
+
+        let mut client = AgentClient::new(temp_socket_path.clone());
+        client.start(&consumer, "debug".to_string()).unwrap();
+        assert!(client.enabled());
+
+        let version = client.check_version().unwrap();
+        assert_eq!(version, protocol::VERSION);
+    }
+
+    #[rstest]
+    fn test_version_rpc_multiple_clients(temp_socket_path: String, consumer: Consumer) {
+        init_tracing();
+        let _agent = Agent::new(temp_socket_path.clone()).unwrap();
+
+        wait_for_socket(&temp_socket_path);
+
+        let mut client1 = AgentClient::new(temp_socket_path.clone());
+        client1.start(&consumer, "debug".to_string()).unwrap();
+
+        let client2 = AgentClient::new(temp_socket_path.clone());
+        let version = client2.check_version().unwrap();
+        assert_eq!(version, protocol::VERSION);
+
+        let client3 = AgentClient::new(temp_socket_path);
+        let version = client3.check_version().unwrap();
+        assert_eq!(version, protocol::VERSION);
+    }
+
+    #[rstest]
+    fn test_version_check_on_start(temp_socket_path: String, consumer: Consumer) {
+        init_tracing();
+        let _agent = Agent::new(temp_socket_path.clone()).unwrap();
+
+        wait_for_socket(&temp_socket_path);
+
+        let mut client = AgentClient::new(temp_socket_path);
+        let result = client.start(&consumer, "debug".to_string());
+        assert!(result.is_ok());
+        assert!(client.enabled());
+    }
+
     use crate::extension::{AgentHandle, Extension, ExtensionError};
     use protocol::ArchivedTracingArgs;
     use std::sync::Mutex;

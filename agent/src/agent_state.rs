@@ -133,6 +133,16 @@ impl AgentState {
         raw_fds: &[RawFd],
         actions: &mut VecDeque<Action>,
     ) {
+        if matches!(archived_msg, protocol::ArchivedControlMessage::Version) {
+            actions.push_back(Action::SendMessage {
+                client_id,
+                message: ControlMessage::VersionResponse {
+                    version: protocol::VERSION,
+                },
+            });
+            return;
+        }
+
         if let Some(client) = self.clients.get_mut(&client_id) {
             let current_state = client.state.clone();
 

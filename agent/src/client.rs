@@ -63,7 +63,6 @@ impl AgentClient {
 }
 
 impl AgentClient {
-    /// Create a new client for the given socket path.
     pub fn new(socket_path: String) -> Self {
         AgentClient {
             socket_path,
@@ -71,18 +70,25 @@ impl AgentClient {
         }
     }
 
-    /// Connect to the agent and share the consumer's memory.
     pub fn start(&mut self, consumer: &Consumer, log_filter: String) -> Result<()> {
         self.start_with_timestamp(consumer, log_filter, TimestampType::Monotonic)
     }
 
-    /// Connect to the agent and share the consumer's memory with custom timestamp type.
     pub fn start_with_timestamp(
         &mut self,
         consumer: &Consumer,
         log_filter: String,
         timestamp_type: TimestampType,
     ) -> Result<()> {
+        let version = self.check_version()?;
+        if version != protocol::VERSION {
+            return Err(AgentError::Io(std::io::Error::other(format!(
+                "version mismatch: agent version {} != client version {}",
+                version,
+                protocol::VERSION
+            ))));
+        }
+
         let stream = UnixStream::connect(&self.socket_path)?;
 
         stream.set_nonblocking(true)?;
@@ -166,7 +172,6 @@ impl AgentClient {
         }
     }
 
-    /// Disconnect from the agent.
     pub fn stop(&mut self) -> Result<()> {
         if let Some(stream) = &self.stream {
             let stop_msg = ProtocolControlMessage::Stop;
@@ -204,9 +209,6 @@ impl AgentClient {
         Ok(())
     }
 
-    /// Send keepalive message to the agent.
-    ///
-    /// Should be called periodically to prevent timeout disconnection.
     pub fn send_continue(&self) -> Result<()> {
         if let Some(stream) = &self.stream {
             let continue_msg = ProtocolControlMessage::Continue;
@@ -233,17 +235,68 @@ impl AgentClient {
         Ok(())
     }
 
-    /// Check if connected to the agent.
     pub fn enabled(&self) -> bool {
         self.stream.is_some()
     }
 
-    /// Alias for send_continue().
     pub fn keepalive(&self) -> Result<()> {
         if self.enabled() {
             self.send_continue()
         } else {
             Err(AgentError::NotEnabled)
+        }
+    }
+
+    pub fn check_version(&self) -> Result<&'static str> {
+        let stream = UnixStream::connect(&self.socket_path)?;
+        stream.set_nonblocking(true)?;
+
+        let version_msg = ProtocolControlMessage::Version;
+        let serialized_len = protocol::compute_length(&version_msg)?;
+        let mut buf = vec![0u8; serialized_len];
+        protocol::serialize_to_buf(&version_msg, &mut buf)?;
+
+        let iov = [std::io::IoSlice::new(&buf)];
+        sendmsg::<()>(stream.as_raw_fd(), &iov, &[], MsgFlags::empty(), None)?;
+
+        let epoll = Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC)?;
+        epoll.add(&stream, EpollEvent::new(EpollFlags::EPOLLIN, 0))?;
+
+        let mut events = vec![EpollEvent::empty(); 1];
+        let timeout = EpollTimeout::from(CLIENT_READ_TIMEOUT_MS);
+
+        let nfds = epoll.wait(&mut events, timeout)?;
+        if nfds == 0 {
+            return Err(AgentError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timeout waiting for agent version response",
+            )));
+        }
+
+        let mut response_buf = [0u8; 1024];
+        let bytes_read = match recv(stream.as_raw_fd(), &mut response_buf, MsgFlags::empty()) {
+            Ok(n) => n,
+            Err(nix::errno::Errno::EAGAIN) => {
+                return Err(AgentError::Io(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "no data available",
+                )))
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let archived_response = rkyv::access::<
+            protocol::ArchivedControlMessage,
+            rkyv::rancor::Error,
+        >(&response_buf[..bytes_read])?;
+
+        match archived_response {
+            protocol::ArchivedControlMessage::VersionResponse { version: _ } => {
+                Ok(protocol::VERSION)
+            }
+            _ => Err(AgentError::Io(std::io::Error::other(
+                "unexpected response from agent",
+            ))),
         }
     }
 }
