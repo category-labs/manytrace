@@ -10,6 +10,17 @@ use crate::{AgentError, Result};
 
 const CLIENT_READ_TIMEOUT_MS: u16 = 5000;
 
+struct ResponseBuffer {
+    data: Vec<u8>,
+}
+
+impl ResponseBuffer {
+    fn as_archived(&self) -> Result<&protocol::ArchivedControlMessage> {
+        rkyv::access::<protocol::ArchivedControlMessage, rkyv::rancor::Error>(&self.data)
+            .map_err(AgentError::Archive)
+    }
+}
+
 /// Client that connects to an agent and sends events.
 pub struct AgentClient {
     socket_path: String,
@@ -17,7 +28,7 @@ pub struct AgentClient {
 }
 
 impl AgentClient {
-    fn wait_for_response(stream: &UnixStream) -> Result<()> {
+    fn wait_for_response(stream: &UnixStream) -> Result<ResponseBuffer> {
         let epoll = Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC)?;
         epoll.add(stream, EpollEvent::new(EpollFlags::EPOLLIN, 0))?;
 
@@ -44,21 +55,9 @@ impl AgentClient {
             Err(e) => return Err(e.into()),
         };
 
-        let archived_response = rkyv::access::<
-            protocol::ArchivedControlMessage,
-            rkyv::rancor::Error,
-        >(&response_buf[..bytes_read])?;
-
-        match archived_response {
-            protocol::ArchivedControlMessage::Ack => Ok(()),
-            protocol::ArchivedControlMessage::Nack { error } => {
-                let error_str = std::str::from_utf8(error.as_bytes()).unwrap_or("unknown error");
-                Err(AgentError::Io(std::io::Error::other(error_str)))
-            }
-            _ => Err(AgentError::Io(std::io::Error::other(
-                "unexpected response from agent",
-            ))),
-        }
+        let mut data = vec![0u8; bytes_read];
+        data.copy_from_slice(&response_buf[..bytes_read]);
+        Ok(ResponseBuffer { data })
     }
 }
 
@@ -122,36 +121,8 @@ impl AgentClient {
             None,
         )?;
 
-        let epoll = Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC)?;
-        epoll.add(&stream, EpollEvent::new(EpollFlags::EPOLLIN, 0))?;
-
-        let mut events = vec![EpollEvent::empty(); 1];
-        let timeout = EpollTimeout::from(CLIENT_READ_TIMEOUT_MS);
-
-        let nfds = epoll.wait(&mut events, timeout)?;
-        if nfds == 0 {
-            return Err(AgentError::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "timeout waiting for agent response",
-            )));
-        }
-
-        let mut response_buf = [0u8; 1024];
-        let bytes_read = match recv(stream.as_raw_fd(), &mut response_buf, MsgFlags::empty()) {
-            Ok(n) => n,
-            Err(nix::errno::Errno::EAGAIN) => {
-                return Err(AgentError::Io(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    "no data available",
-                )))
-            }
-            Err(e) => return Err(e.into()),
-        };
-
-        let archived_response = rkyv::access::<
-            protocol::ArchivedControlMessage,
-            rkyv::rancor::Error,
-        >(&response_buf[..bytes_read])?;
+        let response = Self::wait_for_response(&stream)?;
+        let archived_response = response.as_archived()?;
 
         match archived_response {
             protocol::ArchivedControlMessage::Ack => {
@@ -184,8 +155,17 @@ impl AgentClient {
                 Ok(_) => {
                     debug!("sent stop message to agent");
                     match Self::wait_for_response(stream) {
-                        Ok(_) => {
-                            debug!("received stop ack from agent");
+                        Ok(response) => {
+                            if let Ok(archived_response) = response.as_archived() {
+                                match archived_response {
+                                    protocol::ArchivedControlMessage::Ack => {
+                                        debug!("received stop ack from agent");
+                                    }
+                                    _ => {
+                                        debug!("unexpected response from agent on stop");
+                                    }
+                                }
+                            }
                         }
                         Err(e) => {
                             debug!(error = ?e, "failed to receive stop ack");
@@ -220,8 +200,24 @@ impl AgentClient {
             match sendmsg::<()>(stream.as_raw_fd(), &iov, &[], MsgFlags::empty(), None) {
                 Ok(_) => {
                     debug!("sent continue message to agent");
-                    Self::wait_for_response(stream)?;
-                    debug!("received continue ack from agent");
+                    let response = Self::wait_for_response(stream)?;
+                    let archived_response = response.as_archived()?;
+
+                    match archived_response {
+                        protocol::ArchivedControlMessage::Ack => {
+                            debug!("received continue ack from agent");
+                        }
+                        protocol::ArchivedControlMessage::Nack { error } => {
+                            let error_str =
+                                std::str::from_utf8(error.as_bytes()).unwrap_or("unknown error");
+                            return Err(AgentError::Io(std::io::Error::other(error_str)));
+                        }
+                        _ => {
+                            return Err(AgentError::Io(std::io::Error::other(
+                                "unexpected response from agent",
+                            )));
+                        }
+                    }
                 }
                 Err(nix::errno::Errno::EAGAIN) => {
                     return Err(AgentError::Io(std::io::Error::new(
@@ -259,36 +255,8 @@ impl AgentClient {
         let iov = [std::io::IoSlice::new(&buf)];
         sendmsg::<()>(stream.as_raw_fd(), &iov, &[], MsgFlags::empty(), None)?;
 
-        let epoll = Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC)?;
-        epoll.add(&stream, EpollEvent::new(EpollFlags::EPOLLIN, 0))?;
-
-        let mut events = vec![EpollEvent::empty(); 1];
-        let timeout = EpollTimeout::from(CLIENT_READ_TIMEOUT_MS);
-
-        let nfds = epoll.wait(&mut events, timeout)?;
-        if nfds == 0 {
-            return Err(AgentError::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "timeout waiting for agent version response",
-            )));
-        }
-
-        let mut response_buf = [0u8; 1024];
-        let bytes_read = match recv(stream.as_raw_fd(), &mut response_buf, MsgFlags::empty()) {
-            Ok(n) => n,
-            Err(nix::errno::Errno::EAGAIN) => {
-                return Err(AgentError::Io(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    "no data available",
-                )))
-            }
-            Err(e) => return Err(e.into()),
-        };
-
-        let archived_response = rkyv::access::<
-            protocol::ArchivedControlMessage,
-            rkyv::rancor::Error,
-        >(&response_buf[..bytes_read])?;
+        let response = Self::wait_for_response(&stream)?;
+        let archived_response = response.as_archived()?;
 
         match archived_response {
             protocol::ArchivedControlMessage::VersionResponse { version: _ } => {
