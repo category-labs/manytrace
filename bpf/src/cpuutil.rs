@@ -156,7 +156,7 @@ where
         builder
             .add(&skel.maps.events, move |data| {
                 let cpu_event: &CpuEvent = data.try_into().unwrap();
-                if cpu_event.tgid != 0 {
+                if cpu_event.tgid != 0 && cpu_event.start_time != 0 {
                     let key = (cpu_event.tgid as i32, cpu_event.tid as i32);
                     let entry: &mut ThreadStats = thread_stats.entry(key).or_default();
                     entry.cpu_time_ns += cpu_event.end_time - cpu_event.start_time;
