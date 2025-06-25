@@ -43,7 +43,10 @@ vmlinux = { git = "https://github.com/libbpf/vmlinux.h.git", rev = "83a228cf37fc
 debug = true
 
 [profile.release]
-debug = true
+opt-level = 3
+debug = false
+lto = "fat"
+codegen-units = 1
 
 [profile.bench]
 opt-level = 3
