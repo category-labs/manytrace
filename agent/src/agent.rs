@@ -287,7 +287,7 @@ mod tests {
 
         wait_for_socket(&temp_socket_path);
 
-        let client = AgentClient::new(temp_socket_path);
+        let mut client = AgentClient::new(temp_socket_path);
         let version = client.check_version().unwrap();
         assert_eq!(version, protocol::VERSION);
     }
@@ -317,11 +317,11 @@ mod tests {
         let mut client1 = AgentClient::new(temp_socket_path.clone());
         client1.start(&consumer, "debug".to_string()).unwrap();
 
-        let client2 = AgentClient::new(temp_socket_path.clone());
+        let mut client2 = AgentClient::new(temp_socket_path.clone());
         let version = client2.check_version().unwrap();
         assert_eq!(version, protocol::VERSION);
 
-        let client3 = AgentClient::new(temp_socket_path);
+        let mut client3 = AgentClient::new(temp_socket_path);
         let version = client3.check_version().unwrap();
         assert_eq!(version, protocol::VERSION);
     }

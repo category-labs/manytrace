@@ -69,6 +69,17 @@ impl AgentClient {
         }
     }
 
+    fn connect_or_reuse(&mut self) -> Result<&mut UnixStream> {
+        if self.stream.is_none() {
+            let stream = UnixStream::connect(&self.socket_path)?;
+            stream.set_nonblocking(true)?;
+            self.stream = Some(stream);
+        }
+        self.stream
+            .as_mut()
+            .ok_or_else(|| AgentError::Io(std::io::Error::other("failed to get stream")))
+    }
+
     pub fn start(&mut self, consumer: &Consumer, log_filter: String) -> Result<()> {
         self.start_with_timestamp(consumer, log_filter, TimestampType::Monotonic)
     }
@@ -81,6 +92,7 @@ impl AgentClient {
     ) -> Result<()> {
         let version = self.check_version()?;
         if version != protocol::VERSION {
+            self.stream = None;
             return Err(AgentError::Io(std::io::Error::other(format!(
                 "version mismatch: agent version {} != client version {}",
                 version,
@@ -88,9 +100,7 @@ impl AgentClient {
             ))));
         }
 
-        let stream = UnixStream::connect(&self.socket_path)?;
-
-        stream.set_nonblocking(true)?;
+        let stream = self.connect_or_reuse()?;
 
         let start_msg = ProtocolControlMessage::Start {
             buffer_size: consumer.data_size() as u64,
@@ -121,13 +131,12 @@ impl AgentClient {
             None,
         )?;
 
-        let response = Self::wait_for_response(&stream)?;
+        let response = Self::wait_for_response(stream)?;
         let archived_response = response.as_archived()?;
 
         match archived_response {
             protocol::ArchivedControlMessage::Ack => {
                 debug!("received ack from agent");
-                self.stream = Some(stream);
                 Ok(())
             }
             protocol::ArchivedControlMessage::Nack { error } => {
@@ -243,9 +252,8 @@ impl AgentClient {
         }
     }
 
-    pub fn check_version(&self) -> Result<&'static str> {
-        let stream = UnixStream::connect(&self.socket_path)?;
-        stream.set_nonblocking(true)?;
+    pub fn check_version(&mut self) -> Result<&'static str> {
+        let stream = self.connect_or_reuse()?;
 
         let version_msg = ProtocolControlMessage::Version;
         let serialized_len = protocol::compute_length(&version_msg)?;
@@ -255,7 +263,7 @@ impl AgentClient {
         let iov = [std::io::IoSlice::new(&buf)];
         sendmsg::<()>(stream.as_raw_fd(), &iov, &[], MsgFlags::empty(), None)?;
 
-        let response = Self::wait_for_response(&stream)?;
+        let response = Self::wait_for_response(stream)?;
         let archived_response = response.as_archived()?;
 
         match archived_response {
