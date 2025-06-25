@@ -123,16 +123,31 @@ impl AgentClient {
         ];
         let cmsg = ControlMessage::ScmRights(&fds);
 
-        sendmsg::<()>(
+        if let Err(e) = sendmsg::<()>(
             stream.as_raw_fd(),
             &size_iov,
             &[cmsg],
             MsgFlags::empty(),
             None,
-        )?;
+        ) {
+            self.stream = None;
+            return Err(e.into());
+        }
 
-        let response = Self::wait_for_response(stream)?;
-        let archived_response = response.as_archived()?;
+        let response = match Self::wait_for_response(stream) {
+            Ok(r) => r,
+            Err(e) => {
+                self.stream = None;
+                return Err(e);
+            }
+        };
+        let archived_response = match response.as_archived() {
+            Ok(r) => r,
+            Err(e) => {
+                self.stream = None;
+                return Err(e);
+            }
+        };
 
         match archived_response {
             protocol::ArchivedControlMessage::Ack => {
@@ -141,14 +156,18 @@ impl AgentClient {
             }
             protocol::ArchivedControlMessage::Nack { error } => {
                 let error_str = std::str::from_utf8(error.as_bytes()).unwrap_or("unknown error");
+                self.stream = None;
                 Err(AgentError::Io(std::io::Error::other(format!(
                     "agent rejected start: {}",
                     error_str
                 ))))
             }
-            _ => Err(AgentError::Io(std::io::Error::other(
-                "unexpected response from agent",
-            ))),
+            _ => {
+                self.stream = None;
+                Err(AgentError::Io(std::io::Error::other(
+                    "unexpected response from agent",
+                )))
+            }
         }
     }
 
