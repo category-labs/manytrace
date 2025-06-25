@@ -20,7 +20,7 @@ pub struct StreamIdAllocator {
 
 impl StreamIdAllocator {
     pub fn new() -> Self {
-        Self { next_id: 0 }
+        Self { next_id: 1 }
     }
 
     pub fn allocate(&mut self) -> StreamId {
