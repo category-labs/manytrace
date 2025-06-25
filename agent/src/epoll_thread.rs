@@ -26,7 +26,7 @@ pub fn epoll_listener_thread(
 
     epoll.add(
         &listener,
-        EpollEvent::new(EpollFlags::EPOLLIN, LISTENER_TOKEN),
+        EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLET, LISTENER_TOKEN),
     )?;
 
     let mut events = vec![EpollEvent::empty(); 10];
@@ -50,7 +50,10 @@ pub fn epoll_listener_thread(
                         let client_id = agent_state.get_next_client_id();
                         let mut actions = VecDeque::new();
 
-                        epoll.add(&stream, EpollEvent::new(EpollFlags::EPOLLIN, client_id))?;
+                        epoll.add(
+                            &stream,
+                            EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLET, client_id),
+                        )?;
                         client_sockets.insert(client_id, stream);
                         agent_state.register_client(client_id, &mut actions);
 
@@ -67,7 +70,19 @@ pub fn epoll_listener_thread(
                     }
                 },
                 client_id if client_id != LISTENER_TOKEN => {
-                    if let Some(stream) = client_sockets.get(&client_id) {
+                    if event.events().contains(EpollFlags::EPOLLHUP)
+                        || event.events().contains(EpollFlags::EPOLLERR)
+                    {
+                        debug!(client_id = client_id, "client disconnected (hup/err)");
+                        let mut actions = VecDeque::new();
+                        agent_state.handle_disconnect(client_id, &mut actions);
+                        for token in process_actions(&mut actions, &epoll, &client_sockets)? {
+                            agent_state.remove_client(token);
+                            if let Some(socket) = client_sockets.remove(&token) {
+                                epoll.delete(&socket)?;
+                            }
+                        }
+                    } else if let Some(stream) = client_sockets.get(&client_id) {
                         let mut cmsg_buffer = nix::cmsg_space!([RawFd; 2]);
                         let mut msg_buf = [0u8; 1024];
                         let mut iov = [std::io::IoSliceMut::new(&mut msg_buf)];
