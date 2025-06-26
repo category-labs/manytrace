@@ -16,8 +16,8 @@ filter_process = ["continuous", "manytrace"]
 frequency = 10
 filter_process = ["continuous", "manytrace"]
 
-# [[user]]
-# socket = "/tmp/user1.sock"
+[[user]]
+socket = "/tmp/test.sock"
 
 # [[user]]
 # socket = "/tmp/user2.sock"

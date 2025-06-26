@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-prost = "0.13"
+prost.workspace = true
 bytes = "1.6"
 protocol = { path = "../protocol" }
 
 [build-dependencies]
-prost-build = "0.13"
+prost-build.workspace = true
 
 [dev-dependencies]
 anyhow = "1.0"

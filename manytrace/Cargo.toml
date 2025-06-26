@@ -25,3 +25,10 @@ rkyv.workspace = true
 toml = "0.8"
 ctrlc = "3.4"
 humantime.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+tempfile.workspace = true
+prost.workspace = true
+nix = { version = "0.30", features = ["signal", "process"] }
+serial_test = "3.0"

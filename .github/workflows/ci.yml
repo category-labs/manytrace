@@ -26,7 +26,7 @@ jobs:
             command: cargo clippy --all-targets --workspace -- -D warnings
             components: clippy
           - name: test
-            command: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
+            command: cargo llvm-cov nextest --workspace --exclude manytrace --lcov --output-path lcov.info
             components: llvm-tools-preview
             install_extras: true
           - name: fmt
@@ -35,6 +35,17 @@ jobs:
             skip_deps: true
           - name: bpf-root-tests
             command: sudo -E env "PATH=$PATH" cargo nextest run -p bpf root_tests --run-ignored all
+            components: ""
+            install_extras: true
+          - name: integration
+            command: |
+              # Build required binaries in debug mode
+              cargo build --bin manytrace
+              cargo build --example continuous
+              # Run non-sudo integration tests
+              cargo nextest run -p manytrace --test integration_test
+              # Run sudo integration tests
+              sudo -E env "PATH=$PATH" cargo nextest run -p manytrace test_sudo --run-ignored only
             components: ""
             install_extras: true
     
