@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang \
+            llvm \
+            libelf-dev \
+            libbpf-dev \
+            linux-headers-$(uname -r) \
+            pkg-config \
+            protobuf-compiler
+      
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Build release binary
+        run: |
+          cargo build --release --bin manytrace
+          mkdir -p manytrace-x86_64-unknown-linux-gnu
+          cp target/release/manytrace manytrace-x86_64-unknown-linux-gnu/
+      
+      - name: Create tarball
+        run: tar -czvf manytrace-x86_64-unknown-linux-gnu.tar.gz manytrace-x86_64-unknown-linux-gnu/
+      
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: true
+      
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./manytrace-x86_64-unknown-linux-gnu.tar.gz
+          asset_name: manytrace-x86_64-unknown-linux-gnu.tar.gz
+          asset_content_type: application/gzip
