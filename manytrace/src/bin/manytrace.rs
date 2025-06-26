@@ -79,7 +79,24 @@ fn main() -> Result<()> {
     if let Some(ref consumer) = user_consumer {
         for user_config in &config.user {
             let mut client = AgentClient::new(user_config.socket.clone());
-            match client.start(consumer, user_config.log_filter.clone()) {
+
+            let start_result = if let Some(random_process_id) = user_config.random_process_id {
+                let mut options = std::collections::HashMap::new();
+                options.insert(
+                    agent::RANDOM_PROCESS_ID_OPTION,
+                    protocol::Value::Bool(random_process_id),
+                );
+                client.start_with_options(
+                    consumer,
+                    user_config.log_filter.clone(),
+                    protocol::TimestampType::Monotonic,
+                    options,
+                )
+            } else {
+                client.start(consumer, user_config.log_filter.clone())
+            };
+
+            match start_result {
                 Ok(_) => {
                     tracing::info!(socket = %user_config.socket, "connected to user agent");
                     user_clients.push(client);

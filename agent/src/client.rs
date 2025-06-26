@@ -90,6 +90,21 @@ impl AgentClient {
         log_filter: String,
         timestamp_type: TimestampType,
     ) -> Result<()> {
+        self.start_with_options(
+            consumer,
+            log_filter,
+            timestamp_type,
+            std::collections::HashMap::new(),
+        )
+    }
+
+    pub fn start_with_options(
+        &mut self,
+        consumer: &Consumer,
+        log_filter: String,
+        timestamp_type: TimestampType,
+        options: std::collections::HashMap<&'static str, protocol::Value>,
+    ) -> Result<()> {
         let version = self.check_version()?;
         if version != protocol::VERSION {
             self.stream = None;
@@ -109,6 +124,7 @@ impl AgentClient {
                     log_filter,
                     timestamp_type,
                 }),
+                options,
             },
         };
 

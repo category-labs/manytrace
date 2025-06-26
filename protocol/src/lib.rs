@@ -236,6 +236,15 @@ pub enum TimestampType {
     Realtime,
 }
 
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
+#[rkyv(derive(Debug))]
+pub enum Value {
+    String(#[rkyv(with = InlineAsBox)] &'static str),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+}
+
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[rkyv(compare(PartialEq))]
 pub struct TracingArgs {
@@ -243,10 +252,11 @@ pub struct TracingArgs {
     pub timestamp_type: TimestampType,
 }
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-#[rkyv(compare(PartialEq))]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
 pub struct Args {
     pub tracing: Option<TracingArgs>,
+    #[rkyv(with = MapKV<InlineAsBox, Identity>)]
+    pub options: HashMap<&'static str, Value>,
 }
 
 impl Args {
@@ -258,7 +268,7 @@ impl Args {
     }
 }
 
-#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Archive, Serialize, Deserialize, Debug, Clone)]
 pub enum ControlMessage {
     Start {
         buffer_size: u64,
@@ -994,6 +1004,72 @@ mod tests {
     }
 
     #[test]
+    fn test_value_enum_serialization() {
+        let values = vec![
+            Value::String("test"),
+            Value::Int(42),
+            Value::Float(42.5),
+            Value::Bool(true),
+        ];
+
+        for value in values {
+            let buf =
+                to_bytes_in::<_, Error>(&value, Vec::new()).expect("value serialization failed");
+            let archived = rkyv::access::<ArchivedValue, rkyv::rancor::Error>(&buf)
+                .expect("failed to access archived value");
+
+            match (&value, archived) {
+                (Value::String(s), ArchivedValue::String(arch_s)) => {
+                    assert_eq!(s.as_bytes(), arch_s.as_bytes());
+                }
+                (Value::Int(i), ArchivedValue::Int(arch_i)) => {
+                    assert_eq!(*i, arch_i.to_native());
+                }
+                (Value::Float(f), ArchivedValue::Float(arch_f)) => {
+                    assert_eq!(*f, arch_f.to_native());
+                }
+                (Value::Bool(b), ArchivedValue::Bool(arch_b)) => {
+                    assert_eq!(*b, *arch_b);
+                }
+                _ => panic!("mismatched value variants"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_args_with_options() {
+        let mut options = HashMap::new();
+        options.insert("random_process_id", Value::Bool(true));
+        options.insert("buffer_multiplier", Value::Int(2));
+
+        let args = Args {
+            tracing: Some(TracingArgs {
+                log_filter: "debug".to_string(),
+                timestamp_type: TimestampType::Monotonic,
+            }),
+            options,
+        };
+
+        let buf = to_bytes_in::<_, Error>(&args, Vec::new()).expect("args serialization failed");
+        let archived = rkyv::access::<ArchivedArgs, rkyv::rancor::Error>(&buf)
+            .expect("failed to access archived args");
+
+        assert_eq!(archived.options.len(), 2);
+
+        if let Some(ArchivedValue::Bool(b)) = archived.options.get("random_process_id") {
+            assert!(*b);
+        } else {
+            panic!("random_process_id not found or wrong type");
+        }
+
+        if let Some(ArchivedValue::Int(i)) = archived.options.get("buffer_multiplier") {
+            assert_eq!(i.to_native(), 2);
+        } else {
+            panic!("buffer_multiplier not found or wrong type");
+        }
+    }
+
+    #[test]
     fn test_control_message_serialization() {
         let messages = [
             ControlMessage::Start {
@@ -1003,6 +1079,7 @@ mod tests {
                         log_filter: "info".to_string(),
                         timestamp_type: TimestampType::Monotonic,
                     }),
+                    options: HashMap::new(),
                 },
             },
             ControlMessage::Stop,

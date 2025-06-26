@@ -17,6 +17,7 @@ dependencies = [
  "mpscbuf",
  "nix",
  "protocol",
+ "rand",
  "rkyv",
  "rstest",
  "tempfile",

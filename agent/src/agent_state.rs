@@ -235,6 +235,16 @@ impl AgentState {
                             Ok(new_producer) => {
                                 let producer = Arc::new(Producer::from_inner(new_producer));
 
+                                if let Some(protocol::ArchivedValue::Bool(use_random)) =
+                                    args.options.get(crate::RANDOM_PROCESS_ID_OPTION)
+                                {
+                                    if *use_random {
+                                        let random_pid = rand::random::<i32>().abs();
+                                        crate::set_process_id(random_pid);
+                                        debug!(random_pid, "set random process id");
+                                    }
+                                }
+
                                 if let Ok(exe_path) = std::env::current_exe() {
                                     let process_name = exe_path
                                         .file_name()
@@ -244,7 +254,7 @@ impl AgentState {
                                     let process_event =
                                         protocol::Event::ProcessName(protocol::ProcessName {
                                             name: process_name,
-                                            pid: std::process::id() as i32,
+                                            pid: crate::get_process_id(),
                                         });
                                     if let Err(e) = producer.submit(&process_event) {
                                         debug!(error = ?e, "failed to submit process name event");
@@ -608,6 +618,7 @@ mod tests {
                     log_filter: "debug".to_string(),
                     timestamp_type: protocol::TimestampType::Monotonic,
                 }),
+                options: HashMap::new(),
             },
         };
 
@@ -656,6 +667,7 @@ mod tests {
                     log_filter: "debug".to_string(),
                     timestamp_type: protocol::TimestampType::Monotonic,
                 }),
+                options: HashMap::new(),
             },
         };
 
@@ -725,6 +737,7 @@ mod tests {
                     log_filter: "invalid!!!filter".to_string(),
                     timestamp_type: protocol::TimestampType::Monotonic,
                 }),
+                options: HashMap::new(),
             },
         };
 
@@ -766,6 +779,7 @@ mod tests {
                     log_filter: "debug".to_string(),
                     timestamp_type: protocol::TimestampType::Monotonic,
                 }),
+                options: HashMap::new(),
             },
         };
 
@@ -912,6 +926,7 @@ mod tests {
                     log_filter: "info".to_string(),
                     timestamp_type: protocol::TimestampType::Boottime,
                 }),
+                options: HashMap::new(),
             },
         };
 
@@ -1006,6 +1021,7 @@ mod tests {
                     log_filter: "debug".to_string(),
                     timestamp_type: protocol::TimestampType::Monotonic,
                 }),
+                options: HashMap::new(),
             },
         };
 
@@ -1081,6 +1097,7 @@ mod tests {
                     log_filter: "debug".to_string(),
                     timestamp_type: protocol::TimestampType::Monotonic,
                 }),
+                options: HashMap::new(),
             },
         };
 
@@ -1116,6 +1133,7 @@ mod tests {
                     log_filter: "debug".to_string(),
                     timestamp_type: protocol::TimestampType::Monotonic,
                 }),
+                options: HashMap::new(),
             },
         };
 
@@ -1164,6 +1182,7 @@ mod tests {
                     log_filter: "debug".to_string(),
                     timestamp_type: protocol::TimestampType::Monotonic,
                 }),
+                options: HashMap::new(),
             },
         };
 
@@ -1183,6 +1202,158 @@ mod tests {
     }
 
     #[rstest]
+    fn test_handle_message_pending_start_with_random_process_id(test_consumer: Consumer) {
+        let mut agent_state = AgentState::new(2000, None);
+        let mut actions = VecDeque::new();
+
+        let client_id = agent_state.get_next_client_id();
+        agent_state.register_client(client_id, &mut actions);
+
+        let mut options = HashMap::new();
+        options.insert(crate::RANDOM_PROCESS_ID_OPTION, protocol::Value::Bool(true));
+
+        let start_msg = ControlMessage::Start {
+            buffer_size: 4096,
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "debug".to_string(),
+                    timestamp_type: protocol::TimestampType::Monotonic,
+                }),
+                options,
+            },
+        };
+
+        let serialized_len = protocol::compute_length(&start_msg).unwrap();
+        let mut buf = vec![0u8; serialized_len];
+        protocol::serialize_to_buf(&start_msg, &mut buf).unwrap();
+        let archived_msg =
+            rkyv::access::<protocol::ArchivedControlMessage, rkyv::rancor::Error>(&buf).unwrap();
+
+        let memory_fd = test_consumer.memory_fd().try_clone_to_owned().unwrap();
+        let notification_fd = test_consumer
+            .notification_fd()
+            .try_clone_to_owned()
+            .unwrap();
+        let raw_fds = [memory_fd.into_raw_fd(), notification_fd.into_raw_fd()];
+
+        let original_pid = crate::get_process_id();
+
+        let mut actions = VecDeque::new();
+        agent_state.handle_message(client_id, archived_msg, &raw_fds, &mut actions);
+
+        let new_pid = crate::get_process_id();
+
+        assert_ne!(
+            original_pid, new_pid,
+            "Process ID should be changed when random_process_id is true"
+        );
+        assert!(agent_state.ctx.another_started);
+        assert_eq!(agent_state.started_client, Some(client_id));
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::SendMessage { client_id: id, message: ControlMessage::Ack } if *id == client_id)
+        );
+    }
+
+    #[rstest]
+    fn test_handle_message_pending_start_without_random_process_id(test_consumer: Consumer) {
+        let mut agent_state = AgentState::new(2000, None);
+        let mut actions = VecDeque::new();
+
+        let client_id = agent_state.get_next_client_id();
+        agent_state.register_client(client_id, &mut actions);
+
+        let start_msg = ControlMessage::Start {
+            buffer_size: 4096,
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "debug".to_string(),
+                    timestamp_type: protocol::TimestampType::Monotonic,
+                }),
+                options: HashMap::new(),
+            },
+        };
+
+        let serialized_len = protocol::compute_length(&start_msg).unwrap();
+        let mut buf = vec![0u8; serialized_len];
+        protocol::serialize_to_buf(&start_msg, &mut buf).unwrap();
+        let archived_msg =
+            rkyv::access::<protocol::ArchivedControlMessage, rkyv::rancor::Error>(&buf).unwrap();
+
+        let memory_fd = test_consumer.memory_fd().try_clone_to_owned().unwrap();
+        let notification_fd = test_consumer
+            .notification_fd()
+            .try_clone_to_owned()
+            .unwrap();
+        let raw_fds = [memory_fd.into_raw_fd(), notification_fd.into_raw_fd()];
+
+        let original_pid = crate::get_process_id();
+
+        let mut actions = VecDeque::new();
+        agent_state.handle_message(client_id, archived_msg, &raw_fds, &mut actions);
+
+        let new_pid = crate::get_process_id();
+
+        assert_eq!(
+            original_pid, new_pid,
+            "Process ID should not change when random_process_id is not set"
+        );
+        assert!(agent_state.ctx.another_started);
+        assert_eq!(agent_state.started_client, Some(client_id));
+    }
+
+    #[rstest]
+    fn test_handle_message_pending_start_with_random_process_id_false(test_consumer: Consumer) {
+        let mut agent_state = AgentState::new(2000, None);
+        let mut actions = VecDeque::new();
+
+        let client_id = agent_state.get_next_client_id();
+        agent_state.register_client(client_id, &mut actions);
+
+        let mut options = HashMap::new();
+        options.insert(
+            crate::RANDOM_PROCESS_ID_OPTION,
+            protocol::Value::Bool(false),
+        );
+
+        let start_msg = ControlMessage::Start {
+            buffer_size: 4096,
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "debug".to_string(),
+                    timestamp_type: protocol::TimestampType::Monotonic,
+                }),
+                options,
+            },
+        };
+
+        let serialized_len = protocol::compute_length(&start_msg).unwrap();
+        let mut buf = vec![0u8; serialized_len];
+        protocol::serialize_to_buf(&start_msg, &mut buf).unwrap();
+        let archived_msg =
+            rkyv::access::<protocol::ArchivedControlMessage, rkyv::rancor::Error>(&buf).unwrap();
+
+        let memory_fd = test_consumer.memory_fd().try_clone_to_owned().unwrap();
+        let notification_fd = test_consumer
+            .notification_fd()
+            .try_clone_to_owned()
+            .unwrap();
+        let raw_fds = [memory_fd.into_raw_fd(), notification_fd.into_raw_fd()];
+
+        let original_pid = crate::get_process_id();
+
+        let mut actions = VecDeque::new();
+        agent_state.handle_message(client_id, archived_msg, &raw_fds, &mut actions);
+
+        let new_pid = crate::get_process_id();
+
+        assert_eq!(
+            original_pid, new_pid,
+            "Process ID should not change when random_process_id is false"
+        );
+    }
+
+    #[rstest]
     fn test_handle_message_pending_start_empty_args(test_consumer: Consumer) {
         let mut agent_state = AgentState::new(2000, None);
         let mut actions = VecDeque::new();
@@ -1192,7 +1363,10 @@ mod tests {
 
         let start_msg = ControlMessage::Start {
             buffer_size: 4096,
-            args: protocol::Args { tracing: None },
+            args: protocol::Args {
+                tracing: None,
+                options: HashMap::new(),
+            },
         };
 
         let serialized_len = protocol::compute_length(&start_msg).unwrap();

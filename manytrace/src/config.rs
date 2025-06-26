@@ -24,6 +24,8 @@ pub struct UserConfig {
     pub socket: String,
     #[serde(default = "default_log_filter")]
     pub log_filter: String,
+    #[serde(default)]
+    pub random_process_id: Option<bool>,
 }
 
 fn default_log_filter() -> String {

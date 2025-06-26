@@ -30,12 +30,30 @@
 //! ```
 
 use mpscbuf::MpscBufError;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::OnceLock;
 use thiserror::Error;
 
 pub use agent::{Agent, AgentBuilder};
 pub use client::AgentClient;
 pub use extension::{AgentHandle, Extension, ExtensionError};
 pub use mpsc::{Consumer, Producer};
+
+pub const RANDOM_PROCESS_ID_OPTION: &str = "random_process_id";
+
+static PROCESS_ID: OnceLock<AtomicI32> = OnceLock::new();
+
+fn get_process_id_atomic() -> &'static AtomicI32 {
+    PROCESS_ID.get_or_init(|| AtomicI32::new(std::process::id() as i32))
+}
+
+pub fn get_process_id() -> i32 {
+    get_process_id_atomic().load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_process_id(id: i32) {
+    get_process_id_atomic().store(id, Ordering::Relaxed);
+}
 
 #[derive(Error, Debug)]
 pub enum AgentError {

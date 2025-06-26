@@ -26,7 +26,6 @@ fn get_timestamp(clock_id: libc::clockid_t) -> u64 {
 pub struct ManytraceLayer {
     extension: Arc<TracingExtension>,
     thread_ids: Arc<ThreadLocal<std::cell::Cell<i32>>>,
-    process_id: i32,
 }
 
 impl ManytraceLayer {
@@ -34,7 +33,6 @@ impl ManytraceLayer {
         Self {
             extension,
             thread_ids: Arc::new(ThreadLocal::new()),
-            process_id: std::process::id() as i32,
         }
     }
 
@@ -46,7 +44,7 @@ impl ManytraceLayer {
     }
 
     fn get_process_id(&self) -> i32 {
-        self.process_id
+        agent::get_process_id()
     }
 
     fn is_enabled<S>(&self, metadata: &tracing::Metadata<'_>, ctx: Context<'_, S>) -> bool

@@ -10,6 +10,7 @@ mpscbuf = { path = "../mpscbuf" }
 protocol = { path = "../protocol" }
 arc-swap.workspace = true
 nix = { workspace = true, features = ["socket", "uio", "event"] }
+rand = "0.8"
 rkyv.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
