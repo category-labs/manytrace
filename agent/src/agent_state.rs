@@ -9,6 +9,23 @@ use tracing::{debug, warn};
 use crate::extension::{AgentHandle, Extension, ExtensionError};
 use crate::{AgentError, Producer};
 
+fn validate_and_convert_fd(raw_fd: RawFd) -> Option<OwnedFd> {
+    if raw_fd < 0 {
+        return None;
+    }
+
+    let fd_valid = unsafe {
+        let flags = libc::fcntl(raw_fd, libc::F_GETFD);
+        flags != -1
+    };
+
+    if fd_valid {
+        Some(unsafe { OwnedFd::from_raw_fd(raw_fd) })
+    } else {
+        None
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum Action {
     SendMessage {
@@ -183,18 +200,31 @@ impl AgentState {
                             return;
                         }
 
-                        if raw_fds[0] < 0 || raw_fds[1] < 0 {
-                            actions.push_back(Action::SendMessage {
-                                client_id,
-                                message: ControlMessage::Nack {
-                                    error: "invalid file descriptors".to_owned(),
-                                },
-                            });
-                            return;
-                        }
+                        let memory_fd = match validate_and_convert_fd(raw_fds[0]) {
+                            Some(fd) => fd,
+                            None => {
+                                actions.push_back(Action::SendMessage {
+                                    client_id,
+                                    message: ControlMessage::Nack {
+                                        error: "invalid file descriptors".to_owned(),
+                                    },
+                                });
+                                return;
+                            }
+                        };
 
-                        let memory_fd = unsafe { OwnedFd::from_raw_fd(raw_fds[0]) };
-                        let notification_fd = unsafe { OwnedFd::from_raw_fd(raw_fds[1]) };
+                        let notification_fd = match validate_and_convert_fd(raw_fds[1]) {
+                            Some(fd) => fd,
+                            None => {
+                                actions.push_back(Action::SendMessage {
+                                    client_id,
+                                    message: ControlMessage::Nack {
+                                        error: "invalid file descriptors".to_owned(),
+                                    },
+                                });
+                                return;
+                            }
+                        };
 
                         match MpscProducer::new(
                             memory_fd,
@@ -216,7 +246,6 @@ impl AgentState {
                                             name: process_name,
                                             pid: std::process::id() as i32,
                                         });
-
                                     if let Err(e) = producer.submit(&process_event) {
                                         debug!(error = ?e, "failed to submit process name event");
                                     }
@@ -1069,6 +1098,87 @@ mod tests {
         assert!(
             matches!(&actions[0], Action::SendMessage { message: ControlMessage::Nack { error }, .. }
             if *error == "invalid file descriptors")
+        );
+    }
+
+    #[rstest]
+    fn test_invalid_positive_fd_handling() {
+        let mut agent_state = AgentState::new(2000, None);
+        let mut actions = VecDeque::new();
+
+        let client_id = agent_state.get_next_client_id();
+        agent_state.register_client(client_id, &mut actions);
+
+        let start_msg = ControlMessage::Start {
+            buffer_size: 4096,
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "debug".to_string(),
+                    timestamp_type: protocol::TimestampType::Monotonic,
+                }),
+            },
+        };
+
+        let serialized_len = protocol::compute_length(&start_msg).unwrap();
+        let mut buf = vec![0u8; serialized_len];
+        protocol::serialize_to_buf(&start_msg, &mut buf).unwrap();
+        let archived_msg =
+            rkyv::access::<protocol::ArchivedControlMessage, rkyv::rancor::Error>(&buf).unwrap();
+
+        let raw_fds = [999999, 1000000];
+        actions.clear();
+        agent_state.handle_message(client_id, archived_msg, &raw_fds, &mut actions);
+
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::SendMessage { client_id: id, message: ControlMessage::Nack { .. } } if *id == client_id)
+        );
+    }
+
+    #[rstest]
+    fn test_closed_fd_handling() {
+        use std::os::unix::net::UnixDatagram;
+
+        let mut agent_state = AgentState::new(2000, None);
+        let mut actions = VecDeque::new();
+
+        let client_id = agent_state.get_next_client_id();
+        agent_state.register_client(client_id, &mut actions);
+
+        let sock1 = UnixDatagram::unbound().unwrap();
+        let sock2 = UnixDatagram::unbound().unwrap();
+        let fd1 = sock1.into_raw_fd();
+        let fd2 = sock2.into_raw_fd();
+
+        unsafe {
+            libc::close(fd1);
+            libc::close(fd2);
+        }
+
+        let raw_fds = [fd1, fd2];
+
+        let start_msg = ControlMessage::Start {
+            buffer_size: 4096,
+            args: protocol::Args {
+                tracing: Some(protocol::TracingArgs {
+                    log_filter: "debug".to_string(),
+                    timestamp_type: protocol::TimestampType::Monotonic,
+                }),
+            },
+        };
+
+        let serialized_len = protocol::compute_length(&start_msg).unwrap();
+        let mut buf = vec![0u8; serialized_len];
+        protocol::serialize_to_buf(&start_msg, &mut buf).unwrap();
+        let archived_msg =
+            rkyv::access::<protocol::ArchivedControlMessage, rkyv::rancor::Error>(&buf).unwrap();
+
+        actions.clear();
+        agent_state.handle_message(client_id, archived_msg, &raw_fds, &mut actions);
+
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::SendMessage { client_id: id, message: ControlMessage::Nack { .. } } if *id == client_id)
         );
     }
 
