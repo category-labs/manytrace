@@ -2,7 +2,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use thread_local::ThreadLocal;
 
-use crate::{AgentError, Producer};
+use crate::{get_process_id, AgentError, Producer};
 
 #[derive(Error, Debug)]
 pub enum ExtensionError {
@@ -34,7 +34,7 @@ impl AgentHandle {
                 let thread_event = protocol::Event::ThreadName(protocol::ThreadName {
                     name: thread_name,
                     tid: unsafe { libc::syscall(libc::SYS_gettid) } as i32,
-                    pid: std::process::id() as i32,
+                    pid: get_process_id(),
                 });
 
                 if let Err(e) = self.producer.submit(&thread_event) {
