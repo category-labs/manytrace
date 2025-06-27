@@ -104,7 +104,7 @@ impl BpfConfig {
 
             debug!(
                 module = "cpuutil",
-                interval_ms = cfg.frequency,
+                frequency = cfg.frequency,
                 pid_filters = ?cfg.pid_filters,
                 filter_process = ?cfg.filter_process,
                 "initializing cpu utilization monitor"
@@ -122,7 +122,7 @@ impl BpfConfig {
 
             debug!(
                 module = "profiler",
-                sample_freq = cfg.sample_freq,
+                frequency = cfg.frequency,
                 kernel_samples = cfg.kernel_samples,
                 user_samples = cfg.user_samples,
                 pid_filters = ?cfg.pid_filters,

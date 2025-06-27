@@ -33,7 +33,7 @@ jobs:
             protobuf-compiler
       
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.87
       
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

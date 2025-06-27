@@ -1,10 +1,10 @@
 # buffer_size = 2097152
 
 [bpf.profiler]
-sample_freq = 999
-kernel_samples = true
+frequency = 99
+kernel_samples = false
 user_samples = true
-filter_process = ["continuous", "manytrace"]
+filter_process = ["monad-rpc", "monad-node"]
 # Symbolization options (all default to true)
 # debug_syms = true     # Enable debug symbol resolution
 # perf_map = false      # Enable perf map support
@@ -14,11 +14,14 @@ filter_process = ["continuous", "manytrace"]
 
 [bpf.cpu_util]
 frequency = 10
-filter_process = ["continuous", "manytrace"]
+filter_process = ["monad-rpc", "monad-node"]
 
 [[user]]
-socket = "/tmp/test.sock"
+socket = "/home/dshulyak/monad-integration/logs/1node-full-20250627_070319-2c070ce305012039/node0/manytrace/node.sock"
+log_filter = "DEBUG"
+random_process_id = true
 
-# [[user]]
-# socket = "/tmp/user2.sock"
-# log_filter = "INFO"
+[[user]]
+socket = "/home/dshulyak/monad-integration/logs/1node-full-20250627_070319-2c070ce305012039/node0/manytrace/rpc.sock"
+log_filter = "DEBUG"
+random_process_id = true

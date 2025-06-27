@@ -23,7 +23,7 @@ pub struct CpuUtilConfig {
     #[serde(default = "default_frequency")]
     pub frequency: u64,
     #[serde(default)]
-    pub pid_filters: Vec<u32>,
+    pub pid_filters: Vec<i32>,
     #[serde(default)]
     pub filter_process: Vec<String>,
 }
@@ -330,7 +330,7 @@ mod root_tests {
 
         let config = CpuUtilConfig {
             frequency: 100,
-            pid_filters: vec![cpuutil_setup.current_pid],
+            pid_filters: vec![cpuutil_setup.current_pid as i32],
             filter_process: vec![],
         };
 
@@ -399,7 +399,7 @@ mod root_tests {
 
         let config = CpuUtilConfig {
             frequency: 100,
-            pid_filters: vec![cpuutil_setup.current_pid],
+            pid_filters: vec![cpuutil_setup.current_pid as i32],
             filter_process: vec![],
         };
 

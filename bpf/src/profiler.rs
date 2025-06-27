@@ -19,8 +19,8 @@ use tracing::warn;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfilerConfig {
-    #[serde(default = "default_sample_freq")]
-    pub sample_freq: u64,
+    #[serde(default = "default_frequency")]
+    pub frequency: u64,
     #[serde(default)]
     pub kernel_samples: bool,
     #[serde(default = "default_user_samples")]
@@ -37,7 +37,7 @@ pub struct ProfilerConfig {
     pub map_files: bool,
 }
 
-fn default_sample_freq() -> u64 {
+fn default_frequency() -> u64 {
     99
 }
 
@@ -178,7 +178,7 @@ where
         let perf_type = libbpf_sys::PERF_TYPE_SOFTWARE;
         let perf_config = libbpf_sys::PERF_COUNT_SW_CPU_CLOCK;
 
-        let pefds = perf_event::perf_event_per_cpu(perf_type, perf_config, config.sample_freq)
+        let pefds = perf_event::perf_event_per_cpu(perf_type, perf_config, config.frequency)
             .map_err(|e| BpfError::AttachError(format!("failed to create perf events: {}", e)))?;
 
         let links = perf_event::attach_perf_event(&pefds, &mut skel.progs.profiler_perf_event)
@@ -351,7 +351,7 @@ mod root_tests {
 
         let symbolizer = Symbolizer::new();
         let config = ProfilerConfig {
-            sample_freq: 99,
+            frequency: 99,
             kernel_samples: true,
             user_samples: true,
             pid_filters: vec![std::process::id() as i32],

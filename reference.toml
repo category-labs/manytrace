@@ -1,0 +1,125 @@
+# Manytrace Configuration Reference
+# This file contains all available configuration options with their defaults
+
+# ===========================
+# Global Configuration
+# ===========================
+
+# Size of the buffer for trace data collection (in bytes)
+# Default: 8388608 (8 MB = 8 << 20)
+buffer_size = 8388608
+
+# ===========================
+# BPF Configuration
+# ===========================
+# Note: Global configuration options (buffer_size) can also be specified
+# at the root level without a [global] section header
+
+# Global process name filter that applies to all BPF modules
+# If specified, only processes matching these names will be traced
+# Note: Thread tracker must be enabled when using process name filtering
+# Default: [] (empty - no filtering)
+[bpf]
+filter_process = []
+
+# ---------------------------
+# Thread Tracker Module
+# ---------------------------
+# Tracks process and thread creation/destruction events
+# Required when using process name filtering in other modules
+
+[bpf.thread_tracker]
+# No configuration options - enabled by presence of section
+
+# ---------------------------
+# CPU Utilization Module
+# ---------------------------
+# Monitors CPU usage per thread/process
+
+[bpf.cpu_util]
+# Sampling frequency in Hz (how often to sample CPU usage)
+# Default: 9
+frequency = 9
+
+# Filter by specific process IDs (signed 32-bit integers)
+# Default: [] (empty - no PID filtering)
+pid_filters = []
+
+# Filter by process names (requires thread_tracker)
+# If both global and module-specific filters are set, the module-specific filter takes precedence
+# Default: [] (empty - no name filtering)
+filter_process = []
+
+# ---------------------------
+# Profiler Module
+# ---------------------------
+# Collects stack traces for performance analysis
+
+[bpf.profiler]
+# Sampling frequency in Hz
+# Default: 99
+frequency = 99
+
+# Include kernel stack traces
+# Default: false
+kernel_samples = false
+
+# Include user-space stack traces
+# Default: true
+user_samples = true
+
+# Filter by specific process IDs (signed 32-bit integers)
+# Default: [] (empty - no PID filtering)
+pid_filters = []
+
+# Filter by process names (requires thread_tracker)
+# If both global and module-specific filters are set, the module-specific filter takes precedence
+# Default: [] (empty - no name filtering)
+filter_process = []
+
+# Enable debug symbol resolution
+# Default: true
+debug_syms = true
+
+# Enable perf map support (for JIT-compiled code)
+# Default: false
+perf_map = false
+
+# Enable memory-mapped files for symbol resolution
+# Default: true
+map_files = true
+
+# ===========================
+# User Configuration
+# ===========================
+# Configure trace data consumers
+# Multiple users can be defined to send data to different sockets
+
+[[user]]
+# Path to the Unix domain socket for this consumer
+# Required - no default
+socket = "/path/to/consumer.sock"
+
+# Log filter for this consumer using Rust's env_logger syntax
+# Default: "DEBUG"
+# Examples:
+#   "DEBUG" - global debug level
+#   "warn,my_module=debug" - warn globally, debug for my_module
+#   "info,module1=debug,module2=trace" - mixed levels per module
+#   "info,module_name=off" - info globally, disable module_name
+log_filter = "DEBUG"
+
+# Enable random process ID generation for anonymization
+# Default: false (disabled)
+# When enabled, actual PIDs are replaced with random values
+random_process_id = false
+
+# Example of multiple users with different configurations
+[[user]]
+socket = "/var/run/manytrace/production.sock"
+log_filter = "INFO"
+random_process_id = true
+
+[[user]]
+socket = "/var/run/manytrace/debug.sock"
+log_filter = "TRACE"

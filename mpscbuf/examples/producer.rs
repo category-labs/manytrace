@@ -51,11 +51,10 @@ struct Args {
 
 fn parse_wakeup_strategy(strategy: &str) -> Result<WakeupStrategy, String> {
     match strategy.to_lowercase().as_str() {
-        "selfpacing" | "self-pacing" => Ok(WakeupStrategy::SelfPacing),
         "forced" => Ok(WakeupStrategy::Forced),
         "no-wakeup" | "nowakeup" => Ok(WakeupStrategy::NoWakeup),
         _ => Err(format!(
-            "Invalid wakeup strategy: {}. Valid options: self-pacing, forced, no-wakeup",
+            "Invalid wakeup strategy: {}. Valid options: forced, no-wakeup",
             strategy
         )),
     }

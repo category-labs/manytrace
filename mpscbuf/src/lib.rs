@@ -75,7 +75,6 @@
 //!
 //! ### Wakeup Strategies
 //!
-//! - **`WakeupStrategy::SelfPacing`**: Notify consumer if it's waiting.
 //! - **`WakeupStrategy::Forced`**: Always notify consumer after committing.
 //! - **`WakeupStrategy::NoWakeup`**: Never notify consumer. Consumer must poll.
 //!

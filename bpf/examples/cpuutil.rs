@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut builder = cpuutil::Object::new(CpuUtilConfig {
         frequency: 1000,
-        pid_filters: vec![std::process::id()],
+        pid_filters: vec![std::process::id() as i32],
         filter_process: vec![],
     });
     let mut tracker = builder.build(|message: Message| {
