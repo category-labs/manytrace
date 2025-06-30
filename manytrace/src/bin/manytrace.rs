@@ -8,13 +8,27 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
+
+static LONG_VERSION: OnceLock<String> = OnceLock::new();
+
+fn get_long_version() -> &'static str {
+    LONG_VERSION.get_or_init(|| {
+        format!(
+            "{} (commit: {}, protocol: {})",
+            env!("CARGO_PKG_VERSION"),
+            env!("GIT_REVISION", "unknown"),
+            protocol::VERSION
+        )
+    })
+}
 
 #[derive(Parser)]
 #[command(name = "manytrace")]
 #[command(about = "unified bpf and user-space tracing tool")]
+#[command(version = None, long_version = get_long_version())]
 struct Args {
     #[arg(help = "configuration file path (toml format)")]
     config: String,

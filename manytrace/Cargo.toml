@@ -26,6 +26,9 @@ toml = "0.8"
 ctrlc = "3.4"
 humantime.workspace = true
 
+[build-dependencies]
+grev = "0.1"
+
 [dev-dependencies]
 rstest.workspace = true
 tempfile.workspace = true
