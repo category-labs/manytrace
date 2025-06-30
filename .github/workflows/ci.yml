@@ -19,16 +19,16 @@ jobs:
         include:
           - name: check
             command: cargo check --all --verbose
-            components: ""
+            components: "rustfmt"
           - name: build
             command: cargo build --all --verbose
-            components: ""
+            components: "rustfmt"
           - name: clippy
             command: cargo clippy --all-targets --workspace -- -D warnings
-            components: clippy
+            components: clippy,rustfmt
           - name: test
             command: cargo llvm-cov nextest --workspace --exclude manytrace --lcov --output-path lcov.info
-            components: llvm-tools-preview
+            components: llvm-tools-preview,rustfmt
             install_extras: true
           - name: fmt
             command: cargo fmt --all -- --check
@@ -36,7 +36,7 @@ jobs:
             skip_deps: true
           - name: bpf-root-tests
             command: sudo -E env "PATH=$PATH" cargo nextest run -p bpf root_tests --run-ignored all
-            components: ""
+            components: "rustfmt"
             install_extras: true
           - name: integration
             command: |
@@ -47,7 +47,7 @@ jobs:
               cargo nextest run -p manytrace --test integration_test
               # Run sudo integration tests
               sudo -E env "PATH=$PATH" cargo nextest run -p manytrace test_sudo --run-ignored only
-            components: ""
+            components: "rustfmt"
             install_extras: true
     
     name: ${{ matrix.name }}
