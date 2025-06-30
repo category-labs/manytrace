@@ -1,27 +1,21 @@
-# buffer_size = 2097152
+[bpf.thread_tracker]
 
 [bpf.profiler]
 frequency = 99
-kernel_samples = false
+kernel_samples = true
 user_samples = true
 filter_process = ["monad-rpc", "monad-node"]
-# Symbolization options (all default to true)
-# debug_syms = true     # Enable debug symbol resolution
-# perf_map = false      # Enable perf map support
-# map_files = true
-
-[bpf.thread_tracker]
 
 [bpf.cpu_util]
 frequency = 10
 filter_process = ["monad-rpc", "monad-node"]
 
 [[user]]
-socket = "/home/dshulyak/monad-integration/logs/1node-full-20250627_070319-2c070ce305012039/node0/manytrace/node.sock"
-log_filter = "DEBUG"
+socket = "/home/dshulyak/monad-integration/logs/1node-full-20250630_021259-47d4efab3915e9e5/node0/manytrace/node.sock"
+log_filter = "TRACE"
 random_process_id = true
 
 [[user]]
-socket = "/home/dshulyak/monad-integration/logs/1node-full-20250627_070319-2c070ce305012039/node0/manytrace/rpc.sock"
-log_filter = "DEBUG"
+socket = "/home/dshulyak/monad-integration/logs/1node-full-20250630_021259-47d4efab3915e9e5/node0/manytrace/rpc.sock"
+log_filter = "TRACE"
 random_process_id = true
