@@ -1,12 +1,12 @@
 # manytrace
 
 [![Build Status][actions-badge]][actions-url]
-[![MIT licensed][mit-badge]][mit-url]
+[![GPL licensed][gpl-badge]][gpl-url]
 
 [actions-badge]: https://github.com/dshulyak/manytrace/workflows/CI/badge.svg
 [actions-url]: https://github.com/dshulyak/manytrace/actions?query=workflow%3ACI
-[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
-[mit-url]: LICENSE
+[gpl-badge]: https://img.shields.io/badge/license-GPL-blue.svg
+[gpl-url]: LICENSE
 
 ## setup
 
@@ -79,4 +79,4 @@ random_process_id = true
 
 ## License
 
-Licensed under the MIT license ([LICENSE](LICENSE) or http://opensource.org/licenses/MIT).
+Licensed under the GNU General Public License ([LICENSE](LICENSE) or https://www.gnu.org/licenses/gpl-3.0.html).
