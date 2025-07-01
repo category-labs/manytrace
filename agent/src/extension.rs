@@ -50,7 +50,7 @@ impl AgentHandle {
 
 pub trait Extension: Send + Sync + 'static {
     type Args;
-    fn start(&self, args: &Self::Args, handle: &AgentHandle) -> Result<(), ExtensionError>;
+    fn start(&self, args: &Self::Args, handle: AgentHandle) -> Result<(), ExtensionError>;
 
     fn stop(&self) -> Result<(), ExtensionError>;
 }

@@ -265,7 +265,7 @@ impl AgentState {
                                     if let ArchivedOption::Some(tracing_args) = &args.tracing {
                                         let handle = AgentHandle::new(producer.clone());
                                         debug!(client_id, "starting extension");
-                                        match ext.start(tracing_args, &handle) {
+                                        match ext.start(tracing_args, handle) {
                                             Ok(()) => {
                                                 self.extension_active = true;
                                                 debug!(client_id, "extension started successfully");
@@ -710,7 +710,7 @@ mod tests {
             fn start(
                 &self,
                 args: &protocol::ArchivedTracingArgs,
-                _handle: &AgentHandle,
+                _handle: AgentHandle,
             ) -> Result<(), ExtensionError> {
                 let log_filter = args.log_filter.as_str();
                 EnvFilter::try_new(log_filter).map_err(|_| {

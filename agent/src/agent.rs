@@ -383,7 +383,7 @@ mod tests {
         fn start(
             &self,
             _args: &ArchivedTracingArgs,
-            handle: &AgentHandle,
+            handle: AgentHandle,
         ) -> std::result::Result<(), ExtensionError> {
             if self.fail_on_start {
                 return Err(ExtensionError::ValidationError(
