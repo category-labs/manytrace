@@ -1,6 +1,12 @@
 # manytrace
 
-[![CI](https://github.com/username/manytrace/workflows/CI/badge.svg)](https://github.com/username/manytrace/actions)
+[![Build Status][actions-badge]][actions-url]
+[![MIT licensed][mit-badge]][mit-url]
+
+[actions-badge]: https://github.com/dshulyak/manytrace/workflows/CI/badge.svg
+[actions-url]: https://github.com/dshulyak/manytrace/actions?query=workflow%3ACI
+[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
+[mit-url]: LICENSE
 
 ## setup
 
@@ -73,9 +79,4 @@ random_process_id = true
 
 ## License
 
-Licensed under either of
-
- * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
+Licensed under the MIT license ([LICENSE](LICENSE) or http://opensource.org/licenses/MIT).

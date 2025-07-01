@@ -6,7 +6,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 authors = ["manytrace contributors"]
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [workspace.dependencies]
 arc-swap = "1.7"
