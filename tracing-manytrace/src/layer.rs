@@ -76,6 +76,10 @@ where
             start_timestamp: 0,
         };
         attrs.record(&mut span_data);
+        span_data
+            .labels
+            .strings
+            .insert("target", Cow::Borrowed(attrs.metadata().target()));
         if let Some(span) = ctx.span(id) {
             span.extensions_mut().insert(span_data);
         }
@@ -132,6 +136,10 @@ where
             start_timestamp: 0,
         };
         event.record(&mut span_data);
+        span_data
+            .labels
+            .strings
+            .insert("target", Cow::Borrowed(event.metadata().target()));
         let timestamp = get_timestamp(self.extension.clock_id());
         let instant_event = Instant {
             name: metadata.name(),
