@@ -6,10 +6,9 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = ["disable-trace"]
+default = []
 loom = ["dep:loom"]
-trace = ["tracing/max_level_trace", "tracing/release_max_level_trace"]
-disable-trace = ["tracing/max_level_debug", "tracing/release_max_level_debug"]
+trace = []
 
 [dependencies]
 crossbeam.workspace = true

@@ -4,7 +4,6 @@ use crate::{
     sync::notification::Notification,
     MpscBufError,
 };
-use tracing::trace;
 
 pub struct Record<'a> {
     ringbuf: &'a RingBuf,
@@ -80,7 +79,7 @@ impl Consumer {
             let cons_pos = self.ringbuf.consumer_pos();
             let prod_pos = self.ringbuf.producer_pos();
 
-            trace!(
+            crate::mpsc_trace!(
                 cons_pos = cons_pos,
                 prod_pos = prod_pos,
                 "consumer iter next attempt"
@@ -99,7 +98,7 @@ impl Consumer {
             let header = unsafe { &*header_ptr };
             let (record_len_u32, flags) = header.len_and_flags();
 
-            trace!(
+            crate::mpsc_trace!(
                 cons_pos = cons_pos,
                 offset = offset,
                 record_len = record_len_u32,
@@ -121,7 +120,7 @@ impl Consumer {
                 let record_data =
                     unsafe { std::slice::from_raw_parts(data_ptr.add(data_offset), record_len) };
 
-                trace!(
+                crate::mpsc_trace!(
                     cons_pos = cons_pos,
                     new_cons_pos = cons_pos + total_len,
                     record_len = record_len,
@@ -134,7 +133,7 @@ impl Consumer {
                     cons_pos + total_len,
                 ));
             } else {
-                trace!(
+                crate::mpsc_trace!(
                     cons_pos = cons_pos,
                     new_cons_pos = cons_pos + total_len,
                     "consumer record discarded"
@@ -146,11 +145,13 @@ impl Consumer {
     }
 
     pub fn wait(&mut self) -> Result<(), MpscBufError> {
-        trace!("consumer wait start");
+        crate::mpsc_trace!("consumer wait start");
 
         let result = self.notification.wait();
+        #[cfg_attr(not(feature = "trace"), allow(unused_variables))]
+        let success = result.is_ok();
 
-        trace!(success = result.is_ok(), "consumer wait end");
+        crate::mpsc_trace!(success = success, "consumer wait end");
 
         result
     }

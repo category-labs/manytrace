@@ -6,7 +6,6 @@ use crate::{
     MpscBufError,
 };
 use std::ops::{Deref, DerefMut};
-use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeupStrategy {
@@ -82,7 +81,7 @@ impl Producer {
         let producer_pos = self.ringbuf.producer_pos();
         let new_prod_pos = producer_pos + total_size as u64;
 
-        trace!(
+        crate::mpsc_trace!(
             producer_pos = producer_pos,
             consumer_pos = consumer_pos,
             size = size,
@@ -93,7 +92,7 @@ impl Producer {
         );
 
         if unlikely(new_prod_pos - consumer_pos > self.ringbuf.size_mask()) {
-            trace!(
+            crate::mpsc_trace!(
                 producer_pos = producer_pos,
                 consumer_pos = consumer_pos,
                 new_prod_pos = new_prod_pos,
@@ -117,7 +116,7 @@ impl Producer {
         let data_ptr = unsafe { ptr.add(HEADER_SIZE) };
         self.ringbuf.advance_producer(new_prod_pos);
 
-        trace!(
+        crate::mpsc_trace!(
             producer_pos = new_prod_pos,
             offset = offset,
             size = size,
@@ -154,6 +153,7 @@ pub struct ReservedBuffer<'a> {
     data: &'a mut [u8],
     header: &'a mut RecordHeader,
     notification: &'a Notification,
+    #[cfg_attr(not(feature = "trace"), allow(dead_code))]
     record_pos: u64,
     wakeup_strategy: WakeupStrategy,
 }
@@ -177,7 +177,7 @@ impl<'a> Drop for ReservedBuffer<'a> {
     fn drop(&mut self) {
         let is_discarded = self.header.is_discarded();
 
-        trace!(
+        crate::mpsc_trace!(
             record_pos = self.record_pos,
             is_discarded = is_discarded,
             "producer record drop"

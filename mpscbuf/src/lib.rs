@@ -189,6 +189,9 @@ pub use consumer::{Consumer, Record};
 pub use error::MpscBufError;
 pub use producer::{Producer, ReservedBuffer, WakeupStrategy};
 
+#[macro_use]
+mod trace_macro;
+
 pub(crate) mod common;
 pub mod consumer;
 pub mod error;
