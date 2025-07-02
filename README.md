@@ -3,8 +3,8 @@
 [![Build Status][actions-badge]][actions-url]
 [![GPL licensed][gpl-badge]][gpl-url]
 
-[actions-badge]: https://github.com/dshulyak/manytrace/workflows/CI/badge.svg
-[actions-url]: https://github.com/dshulyak/manytrace/actions?query=workflow%3ACI
+[actions-badge]: https://github.com/category-labs/manytrace/workflows/CI/badge.svg
+[actions-url]: https://github.com/category-labs/manytrace/actions?query=workflow%3ACI
 [gpl-badge]: https://img.shields.io/badge/license-GPL-blue.svg
 [gpl-url]: LICENSE
 
