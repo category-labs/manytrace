@@ -37,9 +37,7 @@ impl AgentHandle {
                     pid: get_process_id(),
                 });
 
-                if let Err(e) = self.producer.submit(&thread_event) {
-                    tracing::debug!(error = ?e, "failed to submit thread name event");
-                }
+                self.producer.submit(&thread_event)?;
             }
             thread_sent.set(true);
         }
