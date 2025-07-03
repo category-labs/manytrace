@@ -34,6 +34,8 @@ jobs:
       
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.87
+        with:
+          components: rustfmt
       
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
