@@ -1,11 +1,39 @@
 use crate::TracingExtension;
 use protocol::{Event, Instant, Labels, Span};
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::sync::Arc;
 use thread_local::ThreadLocal;
 use tracing::{Id, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
+
+thread_local! {
+    static IN_TRACING: Cell<bool> = const { Cell::new(false) };
+}
+
+struct ReentrancyGuard;
+
+impl ReentrancyGuard {
+    fn new() -> Option<Self> {
+        IN_TRACING.with(|in_tracing| {
+            if in_tracing.get() {
+                None
+            } else {
+                in_tracing.set(true);
+                Some(ReentrancyGuard)
+            }
+        })
+    }
+}
+
+impl Drop for ReentrancyGuard {
+    fn drop(&mut self) {
+        IN_TRACING.with(|in_tracing| {
+            in_tracing.set(false);
+        });
+    }
+}
 
 pub(crate) struct SpanData {
     pub labels: Labels<'static>,
@@ -62,6 +90,19 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        let _guard = match ReentrancyGuard::new() {
+            Some(guard) => guard,
+            None => {
+                eprintln!(
+                    "tracing-manytrace: reentrancy detected in on_new_span name={} location={}:{}",
+                    attrs.metadata().name(),
+                    attrs.metadata().file().unwrap_or("<unknown>"),
+                    attrs.metadata().line().unwrap_or(0)
+                );
+                return;
+            }
+        };
+
         if !self.extension.is_active() {
             return;
         }
@@ -86,6 +127,26 @@ where
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
+        let _guard = match ReentrancyGuard::new() {
+            Some(guard) => guard,
+            None => {
+                if let Some(span) = ctx.span(id) {
+                    eprintln!(
+                        "tracing-manytrace: reentrancy detected in on_enter name={} location={}:{}",
+                        span.metadata().name(),
+                        span.metadata().file().unwrap_or("<unknown>"),
+                        span.metadata().line().unwrap_or(0)
+                    );
+                } else {
+                    eprintln!(
+                        "tracing-manytrace: reentrancy detected in on_enter span_id={:?}",
+                        id
+                    );
+                }
+                return;
+            }
+        };
+
         if !self.extension.is_active() {
             return;
         }
@@ -98,6 +159,26 @@ where
     }
 
     fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
+        let _guard = match ReentrancyGuard::new() {
+            Some(guard) => guard,
+            None => {
+                if let Some(span) = ctx.span(id) {
+                    eprintln!(
+                        "tracing-manytrace: reentrancy detected in on_exit name={} location={}:{}",
+                        span.metadata().name(),
+                        span.metadata().file().unwrap_or("<unknown>"),
+                        span.metadata().line().unwrap_or(0)
+                    );
+                } else {
+                    eprintln!(
+                        "tracing-manytrace: reentrancy detected in on_exit span_id={:?}",
+                        id
+                    );
+                }
+                return;
+            }
+        };
+
         if !self.extension.is_active() {
             return;
         }
@@ -121,6 +202,19 @@ where
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+        let _guard = match ReentrancyGuard::new() {
+            Some(guard) => guard,
+            None => {
+                eprintln!(
+                    "tracing-manytrace: reentrancy detected in on_event name={} location={}:{}",
+                    event.metadata().name(),
+                    event.metadata().file().unwrap_or("<unknown>"),
+                    event.metadata().line().unwrap_or(0)
+                );
+                return;
+            }
+        };
+
         if !self.extension.is_active() {
             return;
         }
