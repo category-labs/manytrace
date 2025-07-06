@@ -10,6 +10,7 @@ pub use protocol::Message as BpfMessage;
 pub mod cpuutil;
 mod perf_event;
 pub mod profiler;
+pub mod schedtrace;
 pub mod threadtrack;
 
 pub(crate) trait Filterable {
@@ -18,6 +19,7 @@ pub(crate) trait Filterable {
 
 pub use cpuutil::CpuUtilConfig;
 pub use profiler::ProfilerConfig;
+pub use schedtrace::SchedTraceConfig;
 pub use threadtrack::ThreadTrackerConfig;
 
 #[derive(Error, Debug)]
@@ -38,6 +40,8 @@ pub struct BpfConfig {
     pub cpu_util: Option<CpuUtilConfig>,
     #[serde(default)]
     pub profiler: Option<ProfilerConfig>,
+    #[serde(default)]
+    pub schedtrace: Option<SchedTraceConfig>,
     #[serde(default)]
     pub filter_process: Vec<String>,
 }
@@ -81,7 +85,12 @@ impl BpfConfig {
                 .as_ref()
                 .map(|cfg| !cfg.filter_process.is_empty() || global_filter.is_some())
                 .unwrap_or(false);
-            cpu_needs || profiler_needs
+            let schedtrace_needs = self
+                .schedtrace
+                .as_ref()
+                .map(|cfg| !cfg.filter_process.is_empty() || global_filter.is_some())
+                .unwrap_or(false);
+            cpu_needs || profiler_needs || schedtrace_needs
         };
 
         if needs_process_filtering && self.thread_tracker.is_none() {
@@ -135,13 +144,32 @@ impl BpfConfig {
             (None, HashSet::new())
         };
 
+        let (schedtrace, schedtrace_filters) = if let Some(mut cfg) = self.schedtrace {
+            if let Some(ref global) = global_filter {
+                cfg.filter_process = global.clone();
+            }
+
+            debug!(
+                module = "schedtrace",
+                pid_filters = ?cfg.pid_filters,
+                filter_process = ?cfg.filter_process,
+                "initializing scheduler tracer"
+            );
+            let filters: HashSet<String> = cfg.filter_process.iter().cloned().collect();
+            (Some(schedtrace::Object::new(cfg)), filters)
+        } else {
+            (None, HashSet::new())
+        };
+
         Ok(BpfObject {
             symbolizer: Symbolizer::new(),
             threadtrack,
             cpuutils,
             profiler,
+            schedtrace,
             cpuutil_filters,
             profiler_filters,
+            schedtrace_filters,
         })
     }
 }
@@ -151,8 +179,10 @@ pub struct BpfObject {
     threadtrack: Option<threadtrack::Object>,
     cpuutils: Option<cpuutil::Object>,
     profiler: Option<profiler::Object>,
+    schedtrace: Option<schedtrace::Object>,
     cpuutil_filters: HashSet<String>,
     profiler_filters: HashSet<String>,
+    schedtrace_filters: HashSet<String>,
 }
 
 impl BpfObject {
@@ -178,19 +208,29 @@ impl BpfObject {
             None
         };
 
+        let schedtrace = if let Some(ref mut obj) = self.schedtrace {
+            Some(obj.build(Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>)>)?)
+        } else {
+            None
+        };
+
         let cpuutil_rc = cpuutil.map(|c| Rc::new(RefCell::new(c)));
         let profiler_rc = profiler.map(|p| Rc::new(RefCell::new(p)));
+        let schedtrace_rc = schedtrace.map(|s| Rc::new(RefCell::new(s)));
 
         let threadtrack = if let Some(ref mut obj) = self.threadtrack {
             let has_cpuutil = cpuutil_rc.is_some();
             let has_profiler = profiler_rc.is_some();
+            let has_schedtrace = schedtrace_rc.is_some();
 
-            if has_cpuutil || has_profiler {
+            if has_cpuutil || has_profiler || has_schedtrace {
                 let mut user_callback = callback.clone();
                 let cpuutil_filters = self.cpuutil_filters.clone();
                 let profiler_filters = self.profiler_filters.clone();
+                let schedtrace_filters = self.schedtrace_filters.clone();
                 let cpuutil_ref = cpuutil_rc.clone();
                 let profiler_ref = profiler_rc.clone();
+                let schedtrace_ref = schedtrace_rc.clone();
 
                 let wrapper_callback = move |message: Message<'_>| {
                     if let Message::Event(protocol::Event::Track(ref track)) = message {
@@ -227,6 +267,21 @@ impl BpfObject {
                                     }
                                 }
                             }
+                            if let Some(ref sched) = schedtrace_ref {
+                                let base_name = name.split('/').next_back().unwrap_or(name);
+                                if schedtrace_filters.contains(name)
+                                    || schedtrace_filters.contains(base_name)
+                                {
+                                    if let Err(e) = sched.borrow_mut().filter(pid) {
+                                        tracing::warn!(
+                                        "Failed to add process {} (pid {}) to schedtrace filter: {}",
+                                        name,
+                                        pid,
+                                        e
+                                    );
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -247,6 +302,7 @@ impl BpfObject {
             threadtrack,
             cpuutil: cpuutil_rc,
             profiler: profiler_rc,
+            schedtrace: schedtrace_rc,
         })
     }
 }
@@ -257,6 +313,7 @@ pub struct BpfConsumer<'this> {
     threadtrack: Option<threadtrack::ThreadTracker<'this, Callback<'this>>>,
     cpuutil: Option<Rc<RefCell<cpuutil::CpuUtil<'this, Callback<'this>>>>>,
     profiler: Option<Rc<RefCell<profiler::Profiler<'this, Callback<'this>>>>>,
+    schedtrace: Option<Rc<RefCell<schedtrace::SchedTrace<'this, Callback<'this>>>>>,
 }
 
 impl<'this> BpfConsumer<'this> {
@@ -270,6 +327,9 @@ impl<'this> BpfConsumer<'this> {
         if let Some(ref prof) = self.profiler {
             prof.borrow_mut().consume()?;
         }
+        if let Some(ref sched) = self.schedtrace {
+            sched.borrow_mut().consume()?;
+        }
         Ok(())
     }
 
@@ -282,6 +342,9 @@ impl<'this> BpfConsumer<'this> {
         }
         if let Some(ref prof) = self.profiler {
             prof.borrow_mut().poll(timeout)?;
+        }
+        if let Some(ref sched) = self.schedtrace {
+            sched.borrow_mut().poll(timeout)?;
         }
         Ok(())
     }

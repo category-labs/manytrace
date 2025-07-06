@@ -28,4 +28,5 @@ fn main() {
     build_bpf("threadtrack");
     build_bpf("cpuutil");
     build_bpf("profiler");
+    build_bpf("schedtrace");
 }
