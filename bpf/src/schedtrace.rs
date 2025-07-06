@@ -7,8 +7,12 @@ use schedtrace_skel::*;
 use crate::{BpfError, Filterable};
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::{MapCore, MapFlags, OpenObject, RingBufferBuilder};
-use protocol::Message;
+use protocol::{Event, Labels, Message, Span, Track, TrackId, TrackType};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::time::Duration;
@@ -20,6 +24,27 @@ pub struct SchedTraceConfig {
     pub pid_filters: Vec<i32>,
     #[serde(default)]
     pub filter_process: Vec<String>,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct SchedSpanEvent {
+    pub pid: u32,
+    pub tid: u32,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub cpu: u32,
+}
+
+unsafe impl plain::Plain for SchedSpanEvent {}
+
+impl<'a> TryFrom<&'a [u8]> for &'a SchedSpanEvent {
+    type Error = BpfError;
+
+    fn try_from(data: &'a [u8]) -> Result<Self, Self::Error> {
+        plain::from_bytes(data)
+            .map_err(|e| BpfError::MapError(format!("failed to parse sched span event: {:?}", e)))
+    }
 }
 
 pub struct Object {
@@ -57,7 +82,7 @@ where
     fn new(
         open_object: &'this mut MaybeUninit<OpenObject>,
         config: SchedTraceConfig,
-        _callback: F,
+        mut callback: F,
     ) -> Result<Self, BpfError> {
         let skel_builder = SchedtraceSkelBuilder::default();
 
@@ -91,11 +116,54 @@ where
         skel.attach()
             .map_err(|e| BpfError::AttachError(format!("failed to attach bpf programs: {}", e)))?;
 
+        let mut thread_track_ids: HashMap<(i32, i32), u64> = HashMap::new();
+        let mut rng = rand::thread_rng();
+
         let mut builder = RingBufferBuilder::new();
         builder
             .add(&skel.maps.events, move |data| {
-                debug!("schedtrace event received");
-                let _ = data;
+                match <&SchedSpanEvent>::try_from(data) {
+                    Ok(event) => {
+                        debug!(
+                            pid = event.pid,
+                            tid = event.tid,
+                            cpu = event.cpu,
+                            duration_ns = event.end_time - event.start_time,
+                            "schedtrace span"
+                        );
+
+                        let key = (event.pid as i32, event.tid as i32);
+                        let track_id_value = thread_track_ids.entry(key).or_insert_with(|| {
+                            let id = rng.gen::<u64>();
+                            let track = Track {
+                                name: "kernel",
+                                track_type: TrackType::Custom { id },
+                                parent: Some(TrackType::Thread {
+                                    pid: event.pid as i32,
+                                    tid: event.tid as i32,
+                                }),
+                            };
+                            callback(Message::Event(Event::Track(track)));
+                            id
+                        });
+
+                        let track_id = TrackId::Custom {
+                            id: *track_id_value,
+                        };
+                        let span = Span {
+                            name: "running",
+                            span_id: event.start_time,
+                            start_timestamp: event.start_time,
+                            end_timestamp: event.end_time,
+                            track_id,
+                            labels: Cow::Owned(Labels::new()),
+                        };
+                        callback(Message::Event(Event::Span(span)));
+                    }
+                    Err(e) => {
+                        debug!(error = %e, "failed to parse sched span event");
+                    }
+                }
                 0
             })
             .map_err(|e| BpfError::MapError(format!("failed to add ring buffer: {}", e)))?;
