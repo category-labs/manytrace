@@ -31,10 +31,12 @@ impl AgentHandle {
 
         if !thread_sent.get() {
             if let Some(thread_name) = std::thread::current().name() {
-                let thread_event = protocol::Event::ThreadName(protocol::ThreadName {
+                let tid = unsafe { libc::syscall(libc::SYS_gettid) } as i32;
+                let pid = get_process_id();
+                let thread_event = protocol::Event::Track(protocol::Track {
                     name: thread_name,
-                    tid: unsafe { libc::syscall(libc::SYS_gettid) } as i32,
-                    pid: get_process_id(),
+                    track_type: protocol::TrackType::Thread { tid, pid },
+                    parent: Some(protocol::TrackType::Process { pid }),
                 });
 
                 self.producer.submit(&thread_event)?;

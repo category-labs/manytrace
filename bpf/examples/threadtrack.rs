@@ -22,20 +22,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Message::Event(e) => e,
             _ => return,
         };
-        match event {
-            Event::ThreadName(thread) => {
-                println!(
-                    "{:<8} {:<8} {:<64} {:<40}",
-                    thread.pid, thread.tid, thread.name, "Thread"
-                );
+        if let Event::Track(track) = event {
+            match track.track_type {
+                protocol::TrackType::Thread { tid, pid } => {
+                    println!("{:<8} {:<8} {:<64} {:<40}", pid, tid, track.name, "Thread");
+                }
+                protocol::TrackType::Process { pid } => {
+                    println!("{:<8} {:<8} {:<64} {:<40}", pid, "-", track.name, "Process");
+                }
+                _ => {}
             }
-            Event::ProcessName(process) => {
-                println!(
-                    "{:<8} {:<8} {:<64} {:<40}",
-                    process.pid, "-", process.name, "Process"
-                );
-            }
-            _ => {}
         }
     })?;
 

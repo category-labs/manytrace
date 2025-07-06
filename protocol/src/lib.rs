@@ -94,6 +94,25 @@ pub enum TrackId {
     Counter { id: u64 },
 }
 
+impl ArchivedTrackId {
+    pub fn to_native(&self) -> TrackId {
+        match self {
+            ArchivedTrackId::Cpu { cpu } => TrackId::Cpu {
+                cpu: cpu.to_native(),
+            },
+            ArchivedTrackId::Thread { tid, pid } => TrackId::Thread {
+                tid: tid.to_native(),
+                pid: pid.to_native(),
+            },
+            ArchivedTrackId::Process { pid } => TrackId::Process {
+                pid: pid.to_native(),
+            },
+            ArchivedTrackId::Custom { id } => TrackId::Custom { id: id.to_native() },
+            ArchivedTrackId::Counter { id } => TrackId::Counter { id: id.to_native() },
+        }
+    }
+}
+
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[rkyv(compare(PartialEq))]
 pub enum TrackType<'a> {
@@ -132,6 +151,28 @@ impl<'a> TrackType<'a> {
     }
 }
 
+impl<'a> ArchivedTrackType<'a> {
+    pub fn to_native(&'a self) -> TrackType<'a> {
+        match self {
+            ArchivedTrackType::Cpu { cpu } => TrackType::Cpu {
+                cpu: cpu.to_native(),
+            },
+            ArchivedTrackType::Thread { tid, pid } => TrackType::Thread {
+                tid: tid.to_native(),
+                pid: pid.to_native(),
+            },
+            ArchivedTrackType::Process { pid } => TrackType::Process {
+                pid: pid.to_native(),
+            },
+            ArchivedTrackType::Custom { id } => TrackType::Custom { id: id.to_native() },
+            ArchivedTrackType::Counter { id, unit } => TrackType::Counter {
+                id: id.to_native(),
+                unit: unit.as_ref().map(|u| u.as_ref()),
+            },
+        }
+    }
+}
+
 #[derive(Archive, Serialize, Deserialize)]
 pub struct Track<'a> {
     #[rkyv(with = InlineAsBox)]
@@ -160,8 +201,7 @@ pub struct Span<'a> {
     pub span_id: u64,
     pub start_timestamp: u64,
     pub end_timestamp: u64,
-    pub tid: i32,
-    pub pid: i32,
+    pub track_id: TrackId,
     #[rkyv(with = AsOwned)]
     pub labels: Cow<'a, Labels<'a>>,
 }
@@ -171,25 +211,9 @@ pub struct Instant<'a> {
     #[rkyv(with = InlineAsBox)]
     pub name: &'a str,
     pub timestamp: u64,
-    pub tid: i32,
-    pub pid: i32,
+    pub track_id: TrackId,
     #[rkyv(with = AsOwned)]
     pub labels: Cow<'a, Labels<'a>>,
-}
-
-#[derive(Archive, Serialize, Deserialize)]
-pub struct ThreadName<'a> {
-    #[rkyv(with = InlineAsBox)]
-    pub name: &'a str,
-    pub tid: i32,
-    pub pid: i32,
-}
-
-#[derive(Archive, Serialize, Deserialize)]
-pub struct ProcessName<'a> {
-    #[rkyv(with = InlineAsBox)]
-    pub name: &'a str,
-    pub pid: i32,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -238,8 +262,7 @@ pub struct InternedData<'a> {
 #[derive(Archive, Serialize, Deserialize)]
 pub struct Sample {
     pub cpu: u32,
-    pub pid: i32,
-    pub tid: i32,
+    pub track_id: TrackId,
     pub timestamp: u64,
     pub callstack_iid: u64,
     pub cpu_mode: CpuMode,
@@ -268,8 +291,6 @@ pub enum Event<'a> {
     Counter(Counter<'a>),
     Span(Span<'a>),
     Instant(Instant<'a>),
-    ThreadName(ThreadName<'a>),
-    ProcessName(ProcessName<'a>),
     InternedData(InternedData<'a>),
     Sample(Sample),
     Track(Track<'a>),
@@ -768,8 +789,7 @@ mod tests {
             span_id: 42,
             start_timestamp: 1000,
             end_timestamp: 2000,
-            tid: 1,
-            pid: 2,
+            track_id: TrackId::Thread { tid: 1, pid: 2 },
             labels: Cow::Owned(Labels::default()),
         }
     }
@@ -779,8 +799,7 @@ mod tests {
         Instant {
             name: "test_instant",
             timestamp: 2000,
-            tid: 3,
-            pid: 4,
+            track_id: TrackId::Thread { tid: 3, pid: 4 },
             labels: Cow::Owned(Labels::default()),
         }
     }
@@ -860,8 +879,6 @@ mod tests {
 
         assert_eq!(archived.name.as_bytes(), sample_instant.name.as_bytes());
         assert_eq!(archived.timestamp, sample_instant.timestamp);
-        assert_eq!(archived.tid, sample_instant.tid);
-        assert_eq!(archived.pid, sample_instant.pid);
     }
 
     #[rstest]
@@ -909,43 +926,6 @@ mod tests {
                 (Event::Instant(instant), ArchivedEvent::Instant(arch_instant)) => {
                     assert_eq!(instant.name.as_bytes(), arch_instant.name.as_bytes());
                     assert_eq!(instant.timestamp, arch_instant.timestamp.to_native());
-                }
-                _ => panic!("mismatched event variants"),
-            }
-        }
-    }
-
-    #[test]
-    fn test_thread_process_name_serialization() {
-        let thread_name = ThreadName {
-            name: "worker-thread-1",
-            tid: 12345,
-            pid: 67890,
-        };
-
-        let process_name = ProcessName {
-            name: "my-process",
-            pid: 67890,
-        };
-
-        let thread_event = Event::ThreadName(thread_name);
-        let process_event = Event::ProcessName(process_name);
-
-        for event in [thread_event, process_event] {
-            let buf =
-                to_bytes_in::<_, Error>(&event, Vec::new()).expect("event serialization failed");
-            let archived = rkyv::access::<ArchivedEvent, rkyv::rancor::Error>(&buf)
-                .expect("failed to access archived event");
-
-            match (&event, archived) {
-                (Event::ThreadName(thread), ArchivedEvent::ThreadName(arch_thread)) => {
-                    assert_eq!(thread.name.as_bytes(), arch_thread.name.as_bytes());
-                    assert_eq!(thread.tid, arch_thread.tid.to_native());
-                    assert_eq!(thread.pid, arch_thread.pid.to_native());
-                }
-                (Event::ProcessName(process), ArchivedEvent::ProcessName(arch_process)) => {
-                    assert_eq!(process.name.as_bytes(), arch_process.name.as_bytes());
-                    assert_eq!(process.pid, arch_process.pid.to_native());
                 }
                 _ => panic!("mismatched event variants"),
             }
@@ -1033,8 +1013,10 @@ mod tests {
     fn test_sample_serialization() {
         let sample = Sample {
             cpu: 0,
-            pid: 1234,
-            tid: 5678,
+            track_id: TrackId::Thread {
+                tid: 5678,
+                pid: 1234,
+            },
             timestamp: 1000000,
             callstack_iid: 1,
             cpu_mode: CpuMode::User,
@@ -1048,8 +1030,6 @@ mod tests {
         match archived {
             ArchivedEvent::Sample(s) => {
                 assert_eq!(s.cpu, 0);
-                assert_eq!(s.pid, 1234);
-                assert_eq!(s.tid, 5678);
                 assert_eq!(s.timestamp, 1000000);
                 assert_eq!(s.callstack_iid, 1);
                 assert_eq!(s.cpu_mode, CpuMode::User);
