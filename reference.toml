@@ -89,6 +89,21 @@ perf_map = false
 # Default: true
 map_files = true
 
+# ---------------------------
+# Scheduler Trace Module
+# ---------------------------
+# Tracks scheduler events and thread state transitions
+
+[bpf.schedtrace]
+# Filter by specific process IDs (signed 32-bit integers)
+# Default: [] (empty - no PID filtering)
+pid_filters = []
+
+# Filter by process names (requires thread_tracker)
+# If both global and module-specific filters are set, the module-specific filter takes precedence
+# Default: [] (empty - no name filtering)
+filter_process = []
+
 # ===========================
 # User Configuration
 # ===========================
