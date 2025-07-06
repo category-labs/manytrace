@@ -6,8 +6,6 @@ use std::io::Write;
 
 pub struct PerfettoConverter<W: Write> {
     writer: PerfettoStreamWriter<W>,
-    process_tracks: HashMap<i32, u64>,
-    thread_tracks: HashMap<(i32, i32), u64>,
     track_map: HashMap<protocol::TrackId, u64>,
 }
 
@@ -15,14 +13,13 @@ impl<W: Write> PerfettoConverter<W> {
     pub fn new(writer: W) -> Self {
         Self {
             writer: PerfettoStreamWriter::new(writer),
-            process_tracks: HashMap::new(),
-            thread_tracks: HashMap::new(),
             track_map: HashMap::new(),
         }
     }
 
     fn ensure_process_track(&mut self, pid: i32, name: Option<&str>) -> eyre::Result<u64> {
-        if let Some(&track_uuid) = self.process_tracks.get(&pid) {
+        let track_id = protocol::TrackId::Process { pid };
+        if let Some(&track_uuid) = self.track_map.get(&track_id) {
             return Ok(track_uuid);
         }
 
@@ -30,14 +27,14 @@ impl<W: Write> PerfettoConverter<W> {
             .writer
             .write_process_descriptor(pid as u32, name.map(|name| name.to_string()))?;
 
-        self.process_tracks.insert(pid, track_uuid);
+        self.track_map.insert(track_id, track_uuid);
         Ok(track_uuid)
     }
 
     fn ensure_thread_track(&mut self, pid: i32, tid: i32, name: Option<&str>) -> eyre::Result<u64> {
-        let key = (pid, tid);
+        let track_id = protocol::TrackId::Thread { tid, pid };
 
-        match self.thread_tracks.get(&key).copied() {
+        match self.track_map.get(&track_id).copied() {
             Some(track_uuid) => {
                 if name.is_some() {
                     let process_track_uuid = self.ensure_process_track(pid, None)?;
@@ -59,7 +56,7 @@ impl<W: Write> PerfettoConverter<W> {
                     name.map(|n| n.to_string()),
                     process_track_uuid,
                 )?;
-                self.thread_tracks.insert(key, track_uuid);
+                self.track_map.insert(track_id, track_uuid);
                 Ok(track_uuid)
             }
         }
@@ -117,24 +114,7 @@ impl<W: Write> PerfettoConverter<W> {
         &mut self,
         counter: &protocol::ArchivedCounter,
     ) -> eyre::Result<()> {
-        let track_id = match &counter.track_id {
-            protocol::ArchivedTrackId::Cpu { cpu } => protocol::TrackId::Cpu {
-                cpu: cpu.to_native(),
-            },
-            protocol::ArchivedTrackId::Thread { tid, pid } => protocol::TrackId::Thread {
-                tid: tid.to_native(),
-                pid: pid.to_native(),
-            },
-            protocol::ArchivedTrackId::Process { pid } => protocol::TrackId::Process {
-                pid: pid.to_native(),
-            },
-            protocol::ArchivedTrackId::Custom { id } => {
-                protocol::TrackId::Custom { id: id.to_native() }
-            }
-            protocol::ArchivedTrackId::Counter { id } => {
-                protocol::TrackId::Counter { id: id.to_native() }
-            }
-        };
+        let track_id = counter.track_id.to_native();
 
         if let Some(&track_uuid) = self.track_map.get(&track_id) {
             self.writer.write_double_counter_value(
@@ -148,14 +128,29 @@ impl<W: Write> PerfettoConverter<W> {
 
     fn convert_span(
         &mut self,
-        pid: i32,
-        tid: i32,
+        track_id: &protocol::TrackId,
         name: &str,
         start_timestamp: u64,
         end_timestamp: u64,
         labels: &impl LabelIterator,
     ) -> eyre::Result<()> {
-        let track_uuid = self.ensure_thread_track(pid, tid, None)?;
+        let track_uuid = if let Some(&uuid) = self.track_map.get(track_id) {
+            uuid
+        } else {
+            match track_id {
+                protocol::TrackId::Thread { tid, pid } => {
+                    let uuid = self.ensure_thread_track(*pid, *tid, None)?;
+                    self.track_map.insert(*track_id, uuid);
+                    uuid
+                }
+                protocol::TrackId::Process { pid } => {
+                    let uuid = self.ensure_process_track(*pid, None)?;
+                    self.track_map.insert(*track_id, uuid);
+                    uuid
+                }
+                _ => return Ok(()),
+            }
+        };
         let debug_annotations = Self::create_debug_annotations(labels);
 
         self.writer.write_slice_begin(
@@ -170,13 +165,28 @@ impl<W: Write> PerfettoConverter<W> {
 
     fn convert_instant(
         &mut self,
-        pid: i32,
-        tid: i32,
+        track_id: &protocol::TrackId,
         name: &str,
         timestamp: u64,
         labels: &impl LabelIterator,
     ) -> eyre::Result<()> {
-        let track_uuid = self.ensure_thread_track(pid, tid, None)?;
+        let track_uuid = if let Some(&uuid) = self.track_map.get(track_id) {
+            uuid
+        } else {
+            match track_id {
+                protocol::TrackId::Thread { tid, pid } => {
+                    let uuid = self.ensure_thread_track(*pid, *tid, None)?;
+                    self.track_map.insert(*track_id, uuid);
+                    uuid
+                }
+                protocol::TrackId::Process { pid } => {
+                    let uuid = self.ensure_process_track(*pid, None)?;
+                    self.track_map.insert(*track_id, uuid);
+                    uuid
+                }
+                _ => return Ok(()),
+            }
+        };
         let debug_annotations = Self::create_debug_annotations(labels);
 
         self.writer.write_instant_event(
@@ -185,16 +195,6 @@ impl<W: Write> PerfettoConverter<W> {
             timestamp,
             debug_annotations,
         )?;
-        Ok(())
-    }
-
-    fn convert_thread_name(&mut self, pid: i32, tid: i32, name: &str) -> eyre::Result<()> {
-        let _track_uuid = self.ensure_thread_track(pid, tid, Some(name))?;
-        Ok(())
-    }
-
-    fn convert_process_name(&mut self, pid: i32, name: &str) -> eyre::Result<()> {
-        let _track_uuid = self.ensure_process_track(pid, Some(name))?;
         Ok(())
     }
 
@@ -266,37 +266,31 @@ impl<W: Write> PerfettoConverter<W> {
         match event {
             Event::InternedData(data) => self.convert_interned_data(data, stream_id)?,
             Event::Sample(sample) => {
-                self.writer.write_perf_sample(
-                    sample.cpu,
-                    sample.pid as u32,
-                    sample.tid as u32,
-                    sample.timestamp,
-                    sample.callstack_iid,
-                    stream_id,
-                )?;
+                if let protocol::TrackId::Thread { tid, pid } = sample.track_id {
+                    self.writer.write_perf_sample(
+                        sample.cpu,
+                        pid as u32,
+                        tid as u32,
+                        sample.timestamp,
+                        sample.callstack_iid,
+                        stream_id,
+                    )?;
+                }
             }
             Event::Counter(counter) => self.convert_counter(counter)?,
             Event::Span(span) => self.convert_span(
-                span.pid,
-                span.tid,
+                &span.track_id,
                 span.name,
                 span.start_timestamp,
                 span.end_timestamp,
                 span.labels.as_ref(),
             )?,
             Event::Instant(instant) => self.convert_instant(
-                instant.pid,
-                instant.tid,
+                &instant.track_id,
                 instant.name,
                 instant.timestamp,
                 instant.labels.as_ref(),
             )?,
-            Event::ThreadName(thread_name) => {
-                self.convert_thread_name(thread_name.pid, thread_name.tid, thread_name.name)?
-            }
-            Event::ProcessName(process_name) => {
-                self.convert_process_name(process_name.pid, process_name.name)?
-            }
             Event::Track(track) => self.convert_track(track)?,
         }
         Ok(())
@@ -323,87 +317,40 @@ impl<W: Write> PerfettoConverter<W> {
         match event {
             ArchivedEvent::InternedData(data) => self.convert_interned_data(data, stream_id)?,
             ArchivedEvent::Sample(sample) => {
-                self.writer.write_perf_sample(
-                    sample.cpu.to_native(),
-                    sample.pid.to_native() as u32,
-                    sample.tid.to_native() as u32,
-                    sample.timestamp.to_native(),
-                    sample.callstack_iid.to_native(),
-                    stream_id,
-                )?;
+                if let protocol::ArchivedTrackId::Thread { tid, pid } = &sample.track_id {
+                    self.writer.write_perf_sample(
+                        sample.cpu.to_native(),
+                        pid.to_native() as u32,
+                        tid.to_native() as u32,
+                        sample.timestamp.to_native(),
+                        sample.callstack_iid.to_native(),
+                        stream_id,
+                    )?;
+                }
             }
             ArchivedEvent::Counter(counter) => self.convert_archived_counter(counter)?,
-            ArchivedEvent::Span(span) => self.convert_span(
-                span.pid.to_native(),
-                span.tid.to_native(),
-                span.name.as_ref(),
-                span.start_timestamp.to_native(),
-                span.end_timestamp.to_native(),
-                &span.labels,
-            )?,
-            ArchivedEvent::Instant(instant) => self.convert_instant(
-                instant.pid.to_native(),
-                instant.tid.to_native(),
-                instant.name.as_ref(),
-                instant.timestamp.to_native(),
-                &instant.labels,
-            )?,
-            ArchivedEvent::ThreadName(thread_name) => self.convert_thread_name(
-                thread_name.pid.to_native(),
-                thread_name.tid.to_native(),
-                thread_name.name.as_ref(),
-            )?,
-            ArchivedEvent::ProcessName(process_name) => {
-                self.convert_process_name(process_name.pid.to_native(), process_name.name.as_ref())?
+            ArchivedEvent::Span(span) => {
+                let track_id = span.track_id.to_native();
+                self.convert_span(
+                    &track_id,
+                    span.name.as_ref(),
+                    span.start_timestamp.to_native(),
+                    span.end_timestamp.to_native(),
+                    &span.labels,
+                )?
+            }
+            ArchivedEvent::Instant(instant) => {
+                let track_id = instant.track_id.to_native();
+                self.convert_instant(
+                    &track_id,
+                    instant.name.as_ref(),
+                    instant.timestamp.to_native(),
+                    &instant.labels,
+                )?
             }
             ArchivedEvent::Track(track) => {
-                let track_type = match &track.track_type {
-                    protocol::ArchivedTrackType::Cpu { cpu } => protocol::TrackType::Cpu {
-                        cpu: cpu.to_native(),
-                    },
-                    protocol::ArchivedTrackType::Thread { tid, pid } => {
-                        protocol::TrackType::Thread {
-                            tid: tid.to_native(),
-                            pid: pid.to_native(),
-                        }
-                    }
-                    protocol::ArchivedTrackType::Process { pid } => protocol::TrackType::Process {
-                        pid: pid.to_native(),
-                    },
-                    protocol::ArchivedTrackType::Custom { id } => {
-                        protocol::TrackType::Custom { id: id.to_native() }
-                    }
-                    protocol::ArchivedTrackType::Counter { id, unit } => {
-                        protocol::TrackType::Counter {
-                            id: id.to_native(),
-                            unit: unit.as_ref().map(|u| u.as_ref()),
-                        }
-                    }
-                };
-
-                let parent = track.parent.as_ref().map(|p| match p {
-                    protocol::ArchivedTrackType::Cpu { cpu } => protocol::TrackType::Cpu {
-                        cpu: cpu.to_native(),
-                    },
-                    protocol::ArchivedTrackType::Thread { tid, pid } => {
-                        protocol::TrackType::Thread {
-                            tid: tid.to_native(),
-                            pid: pid.to_native(),
-                        }
-                    }
-                    protocol::ArchivedTrackType::Process { pid } => protocol::TrackType::Process {
-                        pid: pid.to_native(),
-                    },
-                    protocol::ArchivedTrackType::Custom { id } => {
-                        protocol::TrackType::Custom { id: id.to_native() }
-                    }
-                    protocol::ArchivedTrackType::Counter { id, unit } => {
-                        protocol::TrackType::Counter {
-                            id: id.to_native(),
-                            unit: unit.as_ref().map(|u| u.as_ref()),
-                        }
-                    }
-                });
+                let track_type = track.track_type.to_native();
+                let parent = track.parent.as_ref().map(|p| p.to_native());
 
                 let owned_track = protocol::Track {
                     name: track.name.as_ref(),

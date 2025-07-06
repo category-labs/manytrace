@@ -118,18 +118,21 @@ fn test_span_with_fields(mut setup: TestSetup) {
                     found_span_with_fields = true;
                 }
             }
-            Ok(protocol::ArchivedEvent::ProcessName(_)) => {
-                found_process_name = true;
-            }
-            Ok(protocol::ArchivedEvent::ThreadName(_)) => {
-                found_thread_name = true;
-            }
+            Ok(protocol::ArchivedEvent::Track(track)) => match &track.track_type {
+                protocol::ArchivedTrackType::Process { .. } => {
+                    found_process_name = true;
+                }
+                protocol::ArchivedTrackType::Thread { .. } => {
+                    found_thread_name = true;
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
     assert!(found_span_with_fields, "should find span with fields");
-    assert!(found_process_name, "should emit process name");
-    assert!(found_thread_name, "should emit thread name");
+    assert!(found_process_name, "should emit process track");
+    assert!(found_thread_name, "should emit thread track");
     setup.client.stop().expect("failed to stop client");
 }
 
@@ -160,17 +163,20 @@ fn test_thread_process_names(mut setup: TestSetup) {
 
     while let Some(record) = setup.consumer.consume() {
         match record.as_event() {
-            Ok(protocol::ArchivedEvent::ProcessName(process)) => {
-                found_process_name = true;
-                assert!(process.pid.to_native() > 0);
-            }
-            Ok(protocol::ArchivedEvent::ThreadName(thread)) => {
-                if thread.name.as_bytes() == b"test-worker" {
-                    found_thread_name = true;
-                    assert!(thread.tid.to_native() > 0);
-                    assert!(thread.pid.to_native() > 0);
+            Ok(protocol::ArchivedEvent::Track(track)) => match &track.track_type {
+                protocol::ArchivedTrackType::Process { pid } => {
+                    found_process_name = true;
+                    assert!(pid.to_native() > 0);
                 }
-            }
+                protocol::ArchivedTrackType::Thread { tid, pid } => {
+                    if track.name.as_bytes() == b"test-worker" {
+                        found_thread_name = true;
+                        assert!(tid.to_native() > 0);
+                        assert!(pid.to_native() > 0);
+                    }
+                }
+                _ => {}
+            },
             Ok(protocol::ArchivedEvent::Instant(instant)) => {
                 let name = std::str::from_utf8(instant.name.as_bytes()).unwrap_or("");
                 if name.contains("tracing-manytrace/src/tests.rs") {
@@ -182,8 +188,8 @@ fn test_thread_process_names(mut setup: TestSetup) {
         }
     }
 
-    assert!(found_process_name, "should emit process name");
-    assert!(found_thread_name, "should emit thread name");
+    assert!(found_process_name, "should emit process track");
+    assert!(found_thread_name, "should emit thread track");
     assert!(found_event, "should emit the test event");
 
     setup.client.stop().expect("failed to stop client");

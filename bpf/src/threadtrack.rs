@@ -7,7 +7,7 @@ use threadtrack_skel::*;
 use crate::BpfError;
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::{OpenObject, RingBufferBuilder};
-use protocol::{Event, Message, ProcessName, ThreadName};
+use protocol::{Event, Message, Track, TrackType};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::convert::TryFrom;
@@ -119,15 +119,23 @@ where
             .add(&skel.maps.events, move |data| {
                 let thread_event: &ThreadEvent = data.try_into().unwrap();
                 let message = if !thread_event.filename_str().is_empty() {
-                    Message::Event(Event::ProcessName(ProcessName {
+                    Message::Event(Event::Track(Track {
                         name: thread_event.filename_str(),
-                        pid: thread_event.tgid as i32,
+                        track_type: TrackType::Process {
+                            pid: thread_event.tgid as i32,
+                        },
+                        parent: None,
                     }))
                 } else {
-                    Message::Event(Event::ThreadName(ThreadName {
+                    Message::Event(Event::Track(Track {
                         name: thread_event.comm_str(),
-                        tid: thread_event.pid as i32,
-                        pid: thread_event.tgid as i32,
+                        track_type: TrackType::Thread {
+                            tid: thread_event.pid as i32,
+                            pid: thread_event.tgid as i32,
+                        },
+                        parent: Some(TrackType::Process {
+                            pid: thread_event.tgid as i32,
+                        }),
                     }))
                 };
 
@@ -176,9 +184,10 @@ where
             if let Ok(comm) = fs::read_to_string(&comm_path) {
                 let process_name = comm.trim().to_string();
 
-                self.callback.borrow_mut()(Message::Event(Event::ProcessName(ProcessName {
+                self.callback.borrow_mut()(Message::Event(Event::Track(Track {
                     name: process_name.as_str(),
-                    pid,
+                    track_type: TrackType::Process { pid },
+                    parent: None,
                 })));
             }
 
@@ -209,10 +218,10 @@ where
                     if let Ok(comm) = fs::read_to_string(&thread_comm_path) {
                         let thread_name = comm.trim().to_string();
 
-                        self.callback.borrow_mut()(Message::Event(Event::ThreadName(ThreadName {
+                        self.callback.borrow_mut()(Message::Event(Event::Track(Track {
                             name: thread_name.as_str(),
-                            tid,
-                            pid,
+                            track_type: TrackType::Thread { tid, pid },
+                            parent: Some(TrackType::Process { pid }),
                         })));
                     }
                 }
@@ -289,14 +298,17 @@ mod root_tests {
                     _ => return,
                 };
                 let test_event = match event {
-                    Event::ProcessName(p) => TestEvent::ProcessName {
-                        name: p.name.to_string(),
-                        pid: p.pid,
-                    },
-                    Event::ThreadName(t) => TestEvent::ThreadName {
-                        name: t.name.to_string(),
-                        tid: t.tid,
-                        pid: t.pid,
+                    Event::Track(track) => match &track.track_type {
+                        TrackType::Process { pid } => TestEvent::ProcessName {
+                            name: track.name.to_string(),
+                            pid: *pid,
+                        },
+                        TrackType::Thread { tid, pid } => TestEvent::ThreadName {
+                            name: track.name.to_string(),
+                            tid: *tid,
+                            pid: *pid,
+                        },
+                        _ => return,
                     },
                     _ => return,
                 };

@@ -396,8 +396,7 @@ mod tests {
             let event = Event::Instant(protocol::Instant {
                 name: "extension_started",
                 timestamp: 1000,
-                tid: 1,
-                pid: 1,
+                track_id: protocol::TrackId::Thread { tid: 1, pid: 1 },
                 labels: Cow::Owned(Labels::new()),
             });
 

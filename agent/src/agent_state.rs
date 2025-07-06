@@ -251,11 +251,13 @@ impl AgentState {
                                         .and_then(|s| s.to_str())
                                         .unwrap_or("unknown");
 
-                                    let process_event =
-                                        protocol::Event::ProcessName(protocol::ProcessName {
-                                            name: process_name,
+                                    let process_event = protocol::Event::Track(protocol::Track {
+                                        name: process_name,
+                                        track_type: protocol::TrackType::Process {
                                             pid: crate::get_process_id(),
-                                        });
+                                        },
+                                        parent: None,
+                                    });
                                     if let Err(e) = producer.submit(&process_event) {
                                         debug!(error = ?e, "failed to submit process name event");
                                     }

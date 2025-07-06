@@ -1,5 +1,5 @@
 use crate::TracingExtension;
-use protocol::{Event, Instant, Labels, Span};
+use protocol::{Event, Instant, Labels, Span, TrackId};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::sync::Arc;
@@ -192,8 +192,10 @@ where
                     span_id,
                     start_timestamp: span_data.start_timestamp,
                     end_timestamp: get_timestamp(self.extension.clock_id()),
-                    tid: self.get_thread_id(),
-                    pid: self.get_process_id(),
+                    track_id: TrackId::Thread {
+                        tid: self.get_thread_id(),
+                        pid: self.get_process_id(),
+                    },
                     labels: Cow::Borrowed(&span_data.labels),
                 };
                 let _ = self.extension.submit(&Event::Span(span_event));
@@ -238,8 +240,10 @@ where
         let instant_event = Instant {
             name: metadata.name(),
             timestamp,
-            tid: self.get_thread_id(),
-            pid: self.get_process_id(),
+            track_id: TrackId::Thread {
+                tid: self.get_thread_id(),
+                pid: self.get_process_id(),
+            },
             labels: Cow::Borrowed(&span_data.labels),
         };
         let _ = self.extension.submit(&Event::Instant(instant_event));

@@ -193,36 +193,38 @@ impl BpfObject {
                 let profiler_ref = profiler_rc.clone();
 
                 let wrapper_callback = move |message: Message<'_>| {
-                    if let Message::Event(protocol::Event::ProcessName(ref pn)) = message {
-                        let pid = pn.pid;
-                        let name = pn.name;
+                    if let Message::Event(protocol::Event::Track(ref track)) = message {
+                        if let protocol::TrackType::Process { pid } = track.track_type {
+                            let name = track.name;
 
-                        if let Some(ref cpu) = cpuutil_ref {
-                            let base_name = name.split('/').next_back().unwrap_or(name);
-                            if cpuutil_filters.contains(name) || cpuutil_filters.contains(base_name)
-                            {
-                                if let Err(e) = cpu.borrow_mut().filter(pid) {
-                                    tracing::warn!(
+                            if let Some(ref cpu) = cpuutil_ref {
+                                let base_name = name.split('/').next_back().unwrap_or(name);
+                                if cpuutil_filters.contains(name)
+                                    || cpuutil_filters.contains(base_name)
+                                {
+                                    if let Err(e) = cpu.borrow_mut().filter(pid) {
+                                        tracing::warn!(
                                         "Failed to add process {} (pid {}) to cpuutil filter: {}",
                                         name,
                                         pid,
                                         e
                                     );
+                                    }
                                 }
                             }
-                        }
-                        if let Some(ref cpu) = profiler_ref {
-                            let base_name = name.split('/').next_back().unwrap_or(name);
-                            if profiler_filters.contains(name)
-                                || profiler_filters.contains(base_name)
-                            {
-                                if let Err(e) = cpu.borrow_mut().filter(pid) {
-                                    tracing::warn!(
+                            if let Some(ref cpu) = profiler_ref {
+                                let base_name = name.split('/').next_back().unwrap_or(name);
+                                if profiler_filters.contains(name)
+                                    || profiler_filters.contains(base_name)
+                                {
+                                    if let Err(e) = cpu.borrow_mut().filter(pid) {
+                                        tracing::warn!(
                                         "Failed to add process {} (pid {}) to profiler filter: {}",
                                         name,
                                         pid,
                                         e
                                     );
+                                    }
                                 }
                             }
                         }

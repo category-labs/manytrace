@@ -6,7 +6,7 @@ use libbpf_rs::{
     skel::{OpenSkel, SkelBuilder},
     MapCore, RingBuffer, RingBufferBuilder,
 };
-use protocol::{CpuMode, Event, Message, Sample};
+use protocol::{CpuMode, Event, Message, Sample, TrackId};
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
@@ -310,8 +310,10 @@ fn get_stack_frames_by_fd(stackmap_fd: RawFd, stack_id: i32) -> Vec<u64> {
 fn create_sample(event: &PerfEvent, callstack_iid: u64) -> Sample {
     Sample {
         cpu: event.cpu_id,
-        pid: event.tgid as i32,
-        tid: event.pid as i32,
+        track_id: TrackId::Thread {
+            tid: event.pid as i32,
+            pid: event.tgid as i32,
+        },
         timestamp: event.timestamp,
         callstack_iid,
         cpu_mode: CpuMode::Unknown,
@@ -372,7 +374,9 @@ mod root_tests {
                     match event {
                         Event::Sample(sample) => {
                             *sample_count_ref += 1;
-                            thread_ids_ref.insert(sample.tid);
+                            if let protocol::TrackId::Thread { tid, .. } = sample.track_id {
+                                thread_ids_ref.insert(tid);
+                            }
                         }
                         Event::InternedData(data) => {
                             *interned_data_count_ref += 1;
