@@ -223,6 +223,7 @@ dependencies = [
  "ouroboros",
  "plain",
  "protocol",
+ "rand",
  "rstest",
  "serde",
  "tempfile",

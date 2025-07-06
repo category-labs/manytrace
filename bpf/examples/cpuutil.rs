@@ -27,17 +27,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let mut tracker = builder.build(|message: Message| {
         if let Message::Event(Event::Counter(counter)) = message {
+            let (pid, tid) = match &counter.track_id {
+                protocol::TrackId::Thread { pid, tid } => (*pid, *tid),
+                _ => (0, 0),
+            };
             match counter.name {
-                "cpu_time_ns" => {
+                "cpu_time" => {
                     println!(
-                        "[CPU] PID: {:<8} TID: {:<8} Time: {:<15.0} ns  Timestamp: {} ns",
-                        counter.pid, counter.tid, counter.value, counter.timestamp
+                        "[CPU] PID: {:<8} TID: {:<8} Time: {:<15.2} %  Timestamp: {} ns",
+                        pid, tid, counter.value, counter.timestamp
                     );
                 }
-                "kernel_time_ns" => {
+                "kernel_time" => {
                     println!(
-                        "[KRN] PID: {:<8} TID: {:<8} Time: {:<15.0} ns  Timestamp: {} ns",
-                        counter.pid, counter.tid, counter.value, counter.timestamp
+                        "[KRN] PID: {:<8} TID: {:<8} Time: {:<15.2} %  Timestamp: {} ns",
+                        pid, tid, counter.value, counter.timestamp
                     );
                 }
                 _ => {}

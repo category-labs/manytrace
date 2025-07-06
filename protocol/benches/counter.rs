@@ -60,8 +60,7 @@ fn create_counter_with_labels(num_labels: usize) -> Counter<'static> {
         name: "benchmark_counter",
         value: 42.0,
         timestamp: 1234567890,
-        tid: 123,
-        pid: 456,
+        track_id: protocol::TrackId::Counter { id: 12345 },
         labels: Cow::Owned(labels),
         unit: Some("unit"),
     }

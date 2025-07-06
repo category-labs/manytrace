@@ -8,7 +8,6 @@ pub struct PerfettoConverter<W: Write> {
     writer: PerfettoStreamWriter<W>,
     process_tracks: HashMap<i32, u64>,
     thread_tracks: HashMap<(i32, i32), u64>,
-    counter_tracks: HashMap<String, u64>,
     track_map: HashMap<protocol::TrackId, u64>,
 }
 
@@ -18,7 +17,6 @@ impl<W: Write> PerfettoConverter<W> {
             writer: PerfettoStreamWriter::new(writer),
             process_tracks: HashMap::new(),
             thread_tracks: HashMap::new(),
-            counter_tracks: HashMap::new(),
             track_map: HashMap::new(),
         }
     }
@@ -107,31 +105,44 @@ impl<W: Write> PerfettoConverter<W> {
         Ok(())
     }
 
-    fn convert_counter(
+    fn convert_counter(&mut self, counter: &protocol::Counter) -> eyre::Result<()> {
+        if let Some(&track_uuid) = self.track_map.get(&counter.track_id) {
+            self.writer
+                .write_double_counter_value(track_uuid, counter.value, counter.timestamp)?;
+        }
+        Ok(())
+    }
+
+    fn convert_archived_counter(
         &mut self,
-        pid: i32,
-        tid: i32,
-        name: &str,
-        value: f64,
-        timestamp: u64,
-        unit: Option<&str>,
+        counter: &protocol::ArchivedCounter,
     ) -> eyre::Result<()> {
-        let thread_track_uuid = self.ensure_thread_track(pid, tid, None)?;
-        let counter_track_key = format!("{}:{}", tid, name);
-        let counter_track_uuid = if let Some(&uuid) = self.counter_tracks.get(&counter_track_key) {
-            uuid
-        } else {
-            let uuid = self.writer.write_counter_track(
-                name.to_string(),
-                unit.map(|u| u.to_string()),
-                thread_track_uuid,
-            )?;
-            self.counter_tracks.insert(counter_track_key, uuid);
-            uuid
+        let track_id = match &counter.track_id {
+            protocol::ArchivedTrackId::Cpu { cpu } => protocol::TrackId::Cpu {
+                cpu: cpu.to_native(),
+            },
+            protocol::ArchivedTrackId::Thread { tid, pid } => protocol::TrackId::Thread {
+                tid: tid.to_native(),
+                pid: pid.to_native(),
+            },
+            protocol::ArchivedTrackId::Process { pid } => protocol::TrackId::Process {
+                pid: pid.to_native(),
+            },
+            protocol::ArchivedTrackId::Custom { id } => {
+                protocol::TrackId::Custom { id: id.to_native() }
+            }
+            protocol::ArchivedTrackId::Counter { id } => {
+                protocol::TrackId::Counter { id: id.to_native() }
+            }
         };
 
-        self.writer
-            .write_double_counter_value(counter_track_uuid, value, timestamp)?;
+        if let Some(&track_uuid) = self.track_map.get(&track_id) {
+            self.writer.write_double_counter_value(
+                track_uuid,
+                counter.value.to_native(),
+                counter.timestamp.to_native(),
+            )?;
+        }
         Ok(())
     }
 
@@ -264,14 +275,7 @@ impl<W: Write> PerfettoConverter<W> {
                     stream_id,
                 )?;
             }
-            Event::Counter(counter) => self.convert_counter(
-                counter.pid,
-                counter.tid,
-                counter.name,
-                counter.value,
-                counter.timestamp,
-                counter.unit,
-            )?,
+            Event::Counter(counter) => self.convert_counter(counter)?,
             Event::Span(span) => self.convert_span(
                 span.pid,
                 span.tid,
@@ -328,14 +332,7 @@ impl<W: Write> PerfettoConverter<W> {
                     stream_id,
                 )?;
             }
-            ArchivedEvent::Counter(counter) => self.convert_counter(
-                counter.pid.to_native(),
-                counter.tid.to_native(),
-                counter.name.as_ref(),
-                counter.value.to_native(),
-                counter.timestamp.to_native(),
-                counter.unit.as_ref().map(|u| u.as_ref()),
-            )?,
+            ArchivedEvent::Counter(counter) => self.convert_archived_counter(counter)?,
             ArchivedEvent::Span(span) => self.convert_span(
                 span.pid.to_native(),
                 span.tid.to_native(),
