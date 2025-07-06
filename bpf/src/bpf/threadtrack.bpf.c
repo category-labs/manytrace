@@ -17,35 +17,38 @@ struct {
     __uint(max_entries, 256 * 1024);
 } events SEC(".maps");
 
-SEC("tp/sched/sched_wakeup_new")
-int handle_sched_wakeup_new(struct trace_event_raw_sched_wakeup_template* ctx)
+SEC("tp_btf/sched_wakeup_new")
+int BPF_PROG(handle_sched_wakeup_new, struct task_struct *p)
 {
     struct thread_event *e;
     
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid;
-    u32 tgid = pid_tgid >> 32;
+    u32 pid = BPF_CORE_READ(p, pid);
+    u32 tgid = BPF_CORE_READ(p, tgid);
 
     e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
         return 0;
     }
 
-    e->pid = ctx->pid;
+    e->pid = pid;
     e->tgid = tgid;
-    bpf_probe_read_kernel_str(&e->comm, sizeof(e->comm), ctx->comm);
+    BPF_CORE_READ_STR_INTO(&e->comm, p, comm);
     
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
 
-SEC("tp/sched/sched_process_exec")
-int handle_sched_process_exec(struct trace_event_raw_sched_process_exec* ctx)
+SEC("tp_btf/sched_process_exec")
+int BPF_PROG(handle_sched_process_exec, struct task_struct *p, pid_t old_pid, struct linux_binprm *bprm)
 {
     struct thread_event *e;
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid;
-    u32 tgid = pid_tgid >> 32;
+    
+    if (!bprm) {
+        return 0;
+    }
+    
+    u32 pid = BPF_CORE_READ(p, pid);
+    u32 tgid = BPF_CORE_READ(p, tgid);
     
     e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
@@ -54,9 +57,8 @@ int handle_sched_process_exec(struct trace_event_raw_sched_process_exec* ctx)
     
     e->pid = pid;
     e->tgid = tgid;
-    unsigned int filename_offset = ctx->__data_loc_filename & 0xFFFF;
-    bpf_probe_read_kernel_str(&e->filename, sizeof(e->filename), 
-                              (void *)ctx + filename_offset);
+    
+    bpf_probe_read_kernel_str(&e->filename, sizeof(e->filename), bprm->filename);
     
     bpf_ringbuf_submit(e, 0);
     return 0;
