@@ -280,6 +280,32 @@ impl<W: Write> PerfettoStreamWriter<W> {
         self.write_packet(packet, None)
     }
 
+    pub fn write_generic_track(
+        &mut self,
+        name: String,
+        parent_track_uuid: u64,
+    ) -> Result<u64, std::io::Error> {
+        let track_uuid = self.next_track_uuid();
+        let track_desc = TrackDescriptor {
+            uuid: Some(track_uuid),
+            parent_uuid: if parent_track_uuid > 0 {
+                Some(parent_track_uuid)
+            } else {
+                None
+            },
+            static_or_dynamic_name: Some(track_descriptor::StaticOrDynamicName::Name(name)),
+            ..Default::default()
+        };
+
+        let packet = TracePacket {
+            data: Some(trace_packet::Data::TrackDescriptor(track_desc)),
+            ..Default::default()
+        };
+
+        self.write_packet(packet, None)?;
+        Ok(track_uuid)
+    }
+
     pub fn write_counter_track(
         &mut self,
         name: String,

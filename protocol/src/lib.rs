@@ -84,6 +84,62 @@ impl<'a> Default for InternedData<'a> {
     }
 }
 
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[rkyv(compare(PartialEq), derive(Debug))]
+pub enum TrackId {
+    Cpu { cpu: u32 },
+    Thread { tid: i32, pid: i32 },
+    Process { pid: i32 },
+    Custom { id: u64 },
+    Counter { id: u64 },
+}
+
+#[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[rkyv(compare(PartialEq))]
+pub enum TrackType<'a> {
+    Cpu {
+        cpu: u32,
+    },
+    Thread {
+        tid: i32,
+        pid: i32,
+    },
+    Process {
+        pid: i32,
+    },
+    Custom {
+        id: u64,
+    },
+    Counter {
+        id: u64,
+        #[rkyv(with = Map<InlineAsBox>)]
+        unit: Option<&'a str>,
+    },
+}
+
+impl<'a> TrackType<'a> {
+    pub fn to_id(&self) -> TrackId {
+        match self {
+            TrackType::Cpu { cpu } => TrackId::Cpu { cpu: *cpu },
+            TrackType::Thread { tid, pid } => TrackId::Thread {
+                tid: *tid,
+                pid: *pid,
+            },
+            TrackType::Process { pid } => TrackId::Process { pid: *pid },
+            TrackType::Custom { id } => TrackId::Custom { id: *id },
+            TrackType::Counter { id, .. } => TrackId::Counter { id: *id },
+        }
+    }
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+pub struct Track<'a> {
+    #[rkyv(with = InlineAsBox)]
+    pub name: &'a str,
+    pub track_type: TrackType<'a>,
+    pub parent: Option<TrackType<'a>>,
+}
+
 #[derive(Archive, Serialize, Deserialize)]
 pub struct Counter<'a> {
     #[rkyv(with = InlineAsBox)]
@@ -217,6 +273,7 @@ pub enum Event<'a> {
     ProcessName(ProcessName<'a>),
     InternedData(InternedData<'a>),
     Sample(Sample),
+    Track(Track<'a>),
 }
 
 #[derive(Archive, Serialize, Deserialize)]
