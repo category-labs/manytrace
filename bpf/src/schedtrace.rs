@@ -93,8 +93,9 @@ where
 
         let mut builder = RingBufferBuilder::new();
         builder
-            .add(&skel.maps.events, move |_data| {
+            .add(&skel.maps.events, move |data| {
                 debug!("schedtrace event received");
+                let _ = data;
                 0
             })
             .map_err(|e| BpfError::MapError(format!("failed to add ring buffer: {}", e)))?;
@@ -140,5 +141,91 @@ where
 {
     fn filter(&mut self, pid: i32) -> Result<(), BpfError> {
         self.add_pid_filter(pid as u32)
+    }
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::*;
+    use protocol::{Event, TrackType};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Instant;
+
+    fn is_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[derive(Debug)]
+    enum TestMessage {
+        Track { parent_is_thread: bool },
+        Span,
+        Other,
+    }
+
+    #[test]
+    #[ignore = "requires root"]
+    fn test_schedtrace_events() {
+        assert!(is_root());
+
+        let current_pid = std::process::id();
+        let messages = Rc::new(RefCell::new(Vec::new()));
+        let messages_clone = messages.clone();
+
+        let config = SchedTraceConfig {
+            pid_filters: vec![current_pid as i32],
+            filter_process: vec![],
+        };
+
+        let mut object = Object::new(config);
+        let mut schedtrace = object
+            .build(move |message| {
+                let test_msg = match message {
+                    Message::Event(Event::Track(track)) => TestMessage::Track {
+                        parent_is_thread: matches!(&track.parent, Some(TrackType::Thread { .. })),
+                    },
+                    Message::Event(Event::Span(_)) => TestMessage::Span,
+                    _ => TestMessage::Other,
+                };
+                messages_clone.borrow_mut().push(test_msg);
+            })
+            .expect("failed to build schedtrace");
+
+        let thread_handle = std::thread::spawn(move || {
+            for _ in 0..3 {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(100) {
+            let _ = schedtrace.poll(Duration::from_millis(10));
+        }
+
+        thread_handle.join().expect("thread should complete");
+        let _ = schedtrace.consume();
+
+        let collected_messages = messages.borrow();
+
+        let has_thread_track = collected_messages.iter().any(|msg| {
+            matches!(
+                msg,
+                TestMessage::Track {
+                    parent_is_thread: true
+                }
+            )
+        });
+
+        assert!(
+            has_thread_track,
+            "should have track descriptor with thread as parent"
+        );
+
+        let span_count = collected_messages
+            .iter()
+            .filter(|msg| matches!(msg, TestMessage::Span))
+            .count();
+
+        assert!(span_count > 0, "should have produced some spans");
     }
 }
