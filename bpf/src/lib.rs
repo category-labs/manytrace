@@ -209,7 +209,10 @@ impl BpfObject {
         };
 
         let schedtrace = if let Some(ref mut obj) = self.schedtrace {
-            Some(obj.build(Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>)>)?)
+            Some(obj.build(
+                Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>)>,
+                &self.symbolizer,
+            )?)
         } else {
             None
         };

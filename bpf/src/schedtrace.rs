@@ -2,9 +2,11 @@ mod schedtrace_skel {
     include!(concat!(env!("OUT_DIR"), "/schedtrace.skel.rs"));
 }
 
+use blazesym::symbolize::source::{Kernel, Source};
 use schedtrace_skel::*;
 
 use crate::{BpfError, Filterable};
+use blazesym::symbolize::{Input, Sym, Symbolized, Symbolizer};
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::{MapCore, MapFlags, OpenObject, RingBufferBuilder};
 use protocol::{Event, Labels, Message, Span, Track, TrackId, TrackType};
@@ -17,6 +19,8 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::time::Duration;
 use tracing::debug;
+
+const SCHED_EVENT_BLOCKED: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedTraceConfig {
@@ -34,6 +38,8 @@ pub struct SchedSpanEvent {
     pub start_time: u64,
     pub end_time: u64,
     pub cpu: u32,
+    pub frame: u64,
+    pub event_type: u32,
 }
 
 unsafe impl plain::Plain for SchedSpanEvent {}
@@ -60,11 +66,16 @@ impl Object {
         }
     }
 
-    pub fn build<'bd, F>(&'bd mut self, callback: F) -> Result<SchedTrace<'bd, F>, BpfError>
+    pub fn build<'bd, F>(
+        &'bd mut self,
+        callback: F,
+        symbolizer: &'bd Symbolizer,
+    ) -> Result<SchedTrace<'bd, F>, BpfError>
     where
         F: for<'a> FnMut(Message<'a>) + 'bd,
     {
-        let schedtrace = SchedTrace::new(&mut self.object, self.config.clone(), callback)?;
+        let schedtrace =
+            SchedTrace::new(&mut self.object, self.config.clone(), callback, symbolizer)?;
         Ok(schedtrace)
     }
 }
@@ -83,6 +94,7 @@ where
         open_object: &'this mut MaybeUninit<OpenObject>,
         config: SchedTraceConfig,
         mut callback: F,
+        symbolizer: &'this Symbolizer,
     ) -> Result<Self, BpfError> {
         let skel_builder = SchedtraceSkelBuilder::default();
 
@@ -119,6 +131,7 @@ where
         let mut thread_track_ids: HashMap<(i32, i32), u64> = HashMap::new();
         let mut rng = rand::thread_rng();
 
+        let symbolizer_ref = symbolizer;
         let mut builder = RingBufferBuilder::new();
         builder
             .add(&skel.maps.events, move |data| {
@@ -150,8 +163,19 @@ where
                         let track_id = TrackId::Custom {
                             id: *track_id_value,
                         };
+
+                        let span_name =
+                            if event.event_type == SCHED_EVENT_BLOCKED && event.frame != 0 {
+                                match resolve_kernel_symbol(symbolizer_ref, event.frame) {
+                                    Some(sym) => format!("waiting [{}]", sym.name),
+                                    None => format!("waiting [0x{:x}]", event.frame),
+                                }
+                            } else {
+                                "running".to_string()
+                            };
+
                         let span = Span {
-                            name: "running",
+                            name: span_name.as_str(),
                             span_id: event.start_time,
                             start_timestamp: event.start_time,
                             end_timestamp: event.end_time,
@@ -212,6 +236,27 @@ where
     }
 }
 
+fn resolve_kernel_symbol<'a>(symbolizer: &'a Symbolizer, addr: u64) -> Option<Sym<'a>> {
+    let source = Source::Kernel(Kernel::default());
+    let addresses = vec![addr];
+
+    match symbolizer.symbolize(&source, Input::AbsAddr(&addresses)) {
+        Ok(results) => {
+            for result in results {
+                match result {
+                    Symbolized::Sym(sym) => return Some(sym),
+                    _ => continue,
+                }
+            }
+            None
+        }
+        Err(e) => {
+            debug!(error = %e, addr = %addr, "failed to symbolize kernel address");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod root_tests {
     use super::*;
@@ -245,18 +290,25 @@ mod root_tests {
             filter_process: vec![],
         };
 
+        let symbolizer = Symbolizer::new();
         let mut object = Object::new(config);
         let mut schedtrace = object
-            .build(move |message| {
-                let test_msg = match message {
-                    Message::Event(Event::Track(track)) => TestMessage::Track {
-                        parent_is_thread: matches!(&track.parent, Some(TrackType::Thread { .. })),
-                    },
-                    Message::Event(Event::Span(_)) => TestMessage::Span,
-                    _ => TestMessage::Other,
-                };
-                messages_clone.borrow_mut().push(test_msg);
-            })
+            .build(
+                move |message| {
+                    let test_msg = match message {
+                        Message::Event(Event::Track(track)) => TestMessage::Track {
+                            parent_is_thread: matches!(
+                                &track.parent,
+                                Some(TrackType::Thread { .. })
+                            ),
+                        },
+                        Message::Event(Event::Span(_)) => TestMessage::Span,
+                        _ => TestMessage::Other,
+                    };
+                    messages_clone.borrow_mut().push(test_msg);
+                },
+                &symbolizer,
+            )
             .expect("failed to build schedtrace");
 
         let thread_handle = std::thread::spawn(move || {
