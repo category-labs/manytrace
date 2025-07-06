@@ -21,6 +21,7 @@ use std::time::Duration;
 use tracing::debug;
 
 const SCHED_EVENT_BLOCKED: u32 = 1;
+const SCHED_EVENT_WAKING: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedTraceConfig {
@@ -164,15 +165,17 @@ where
                             id: *track_id_value,
                         };
 
-                        let span_name =
-                            if event.event_type == SCHED_EVENT_BLOCKED && event.frame != 0 {
+                        let span_name = match event.event_type {
+                            SCHED_EVENT_BLOCKED if event.frame != 0 => {
                                 match resolve_kernel_symbol(symbolizer_ref, event.frame) {
                                     Some(sym) => format!("waiting [{}]", sym.name),
                                     None => format!("waiting [0x{:x}]", event.frame),
                                 }
-                            } else {
-                                "running".to_string()
-                            };
+                            }
+                            SCHED_EVENT_BLOCKED => "waiting".to_string(),
+                            SCHED_EVENT_WAKING => "waking".to_string(),
+                            _ => "running".to_string(),
+                        };
 
                         let span = Span {
                             name: span_name.as_str(),

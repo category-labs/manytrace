@@ -8,6 +8,7 @@ char LICENSE[] SEC("license") = "GPL";
 enum sched_event_type {
     SCHED_EVENT_RUNNING,
     SCHED_EVENT_BLOCKED,
+    SCHED_EVENT_WAKING,
 };
 
 struct sched_span_event {
@@ -149,8 +150,8 @@ static __always_inline void handle_task_on_cpu(struct task_struct *task, u64 now
         e->start_time = state->blocked_time;
         e->end_time = now;
         e->cpu = bpf_get_smp_processor_id();
-        e->frame = state->frame;
-        e->event_type = SCHED_EVENT_BLOCKED;
+        e->frame = 0;
+        e->event_type = SCHED_EVENT_WAKING;
         
         bpf_ringbuf_submit(e, 0);
     }
@@ -165,6 +166,51 @@ int handle_sched_switch(u64 *ctx)
     
     handle_task_off_cpu(prev, now, ctx);
     handle_task_on_cpu(next, now);
+    
+    return 0;
+}
+
+SEC("tp_btf/sched_waking")
+int handle_sched_waking(u64 *ctx)
+{
+    struct task_struct *task = (struct task_struct *)ctx[0];
+    if (!task || task->pid == 0) {
+        return 0;
+    }
+    
+    u32 tid = BPF_CORE_READ(task, pid);
+    u32 tgid = BPF_CORE_READ(task, tgid);
+    
+    if (!should_track_tgid(tgid)) {
+        return 0;
+    }
+    
+    u64 now = bpf_ktime_get_ns();
+    
+    struct task_state *state = bpf_map_lookup_elem(&task_states, &tid);
+    if (state && state->blocked_time > 0 && state->blocked_time < now) {
+        struct sched_span_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+        if (!e) {
+            return 0;
+        }
+        
+        e->pid = tgid;
+        e->tid = tid;
+        e->start_time = state->blocked_time;
+        e->end_time = now;
+        e->cpu = bpf_get_smp_processor_id();
+        e->frame = state->frame;
+        e->event_type = SCHED_EVENT_BLOCKED;
+        
+        bpf_ringbuf_submit(e, 0);
+    }
+    
+    struct task_state new_state = {
+        .blocked_time = now,
+        .frame = 0
+    };
+    
+    bpf_map_update_elem(&task_states, &tid, &new_state, BPF_ANY);
     
     return 0;
 }
