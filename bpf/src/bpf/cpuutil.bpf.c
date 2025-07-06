@@ -91,8 +91,8 @@ static __always_inline void submit_cpu_event(struct cpu_state *state, u64 end_ti
     bpf_ringbuf_submit(e, 0);
 }
 
-SEC("tp/sched/sched_switch")
-int handle_sched_switch(struct trace_event_raw_sched_switch *ctx)
+SEC("tp_btf/sched_switch")
+int BPF_PROG(handle_sched_switch, bool preempt, struct task_struct *prev, struct task_struct *next)
 {
     u64 now = get_time();
     u32 zero = 0;
@@ -101,21 +101,20 @@ int handle_sched_switch(struct trace_event_raw_sched_switch *ctx)
         return 0;
     }
     
-    u32 prev_pid = ctx->prev_pid;
-    u32 next_pid = ctx->next_pid;
-    
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tgid = pid_tgid >> 32;
-    state->tgid = tgid;
+    u32 prev_pid = BPF_CORE_READ(prev, pid);
+    u32 next_pid = BPF_CORE_READ(next, pid);
+    u32 prev_tgid = BPF_CORE_READ(prev, tgid);
+    u32 next_tgid = BPF_CORE_READ(next, tgid);
     
     if (state->tid == prev_pid && state->tid != 0) {
+        state->tgid = prev_tgid;
         if (should_track_tgid(state->tgid)) {
             submit_cpu_event(state, now, false);
         }
     }
     
     state->tid = next_pid;
-    state->tgid = 0;
+    state->tgid = next_tgid;
     state->start_time = now;
     state->kernel_start_time = 0;
     state->kernel_time_acc = 0;
@@ -124,8 +123,8 @@ int handle_sched_switch(struct trace_event_raw_sched_switch *ctx)
     return 0;
 }
 
-SEC("tp/raw_syscalls/sys_enter")
-int handle_sys_enter(struct trace_event_raw_sys_enter *ctx)
+SEC("tp_btf/sys_enter")
+int BPF_PROG(handle_sys_enter, struct pt_regs *regs, long id)
 {
     u32 zero = 0;
     struct cpu_state *state = bpf_map_lookup_elem(&cpu_states, &zero);
@@ -148,8 +147,8 @@ int handle_sys_enter(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
-SEC("tp/raw_syscalls/sys_exit")
-int handle_sys_exit(struct trace_event_raw_sys_exit *ctx)
+SEC("tp_btf/sys_exit")
+int BPF_PROG(handle_sys_exit, struct pt_regs *regs, long ret)
 {
     u32 zero = 0;
     struct cpu_state *state = bpf_map_lookup_elem(&cpu_states, &zero);
