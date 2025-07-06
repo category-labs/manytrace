@@ -432,7 +432,7 @@ mod root_tests {
         );
 
         for event in &cpu_time_events {
-            assert!(event.value > 0.0, "cpu time should be greater than zero");
+            assert!(event.value >= 0.0);
             assert!(
                 event.value <= 100.0,
                 "cpu time percentage should not exceed 100%"

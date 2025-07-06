@@ -5,20 +5,28 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
+enum sched_event_type {
+    SCHED_EVENT_RUNNING,
+    SCHED_EVENT_BLOCKED,
+};
+
 struct sched_span_event {
     u32 pid;
     u32 tid;
     u64 start_time;
     u64 end_time;
     u32 cpu;
+    u64 frame;
+    u32 event_type;
 };
+
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, u32);
     __type(value, u64);
-} switch_start SEC(".maps");
+} cpu_start_time SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -31,6 +39,18 @@ struct {
     __type(key, u32);
     __type(value, u32);
 } tracked_tgids SEC(".maps");
+
+struct task_state {
+    u64 blocked_time;
+    u64 frame;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 10000);
+    __type(key, u32);
+    __type(value, struct task_state);
+} task_states SEC(".maps");
 
 const volatile struct {
     bool filter_enabled;
@@ -49,50 +69,103 @@ static __always_inline bool should_track_tgid(u32 tgid) {
     return val != NULL;
 }
 
-static __always_inline u64 record_start(u64 timestamp) {
-    u32 zero = 0;
-    u64 *start = bpf_map_lookup_elem(&switch_start, &zero);
-    if (!start) {
-        return 0;
+
+static __always_inline void handle_task_off_cpu(struct task_struct *task, u64 now, u64 *ctx)
+{
+    if (!task || task->pid == 0) {
+        return;
     }
     
-    u64 old = *start;
-    *start = timestamp;
-    return old;
+    u32 tid = BPF_CORE_READ(task, pid);
+    u32 tgid = BPF_CORE_READ(task, tgid);
+    
+    if (!should_track_tgid(tgid)) {
+        return;
+    }
+    
+    u32 zero = 0;
+    u64 *start = bpf_map_lookup_elem(&cpu_start_time, &zero);
+    if (!start || *start == 0 || *start > now) {
+        return;
+    }
+    
+    struct sched_span_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) {
+        return;
+    }
+    
+    e->pid = tgid;
+    e->tid = tid;
+    e->start_time = *start;
+    e->end_time = now;
+    e->cpu = bpf_get_smp_processor_id();
+    e->frame = -1;
+    e->event_type = SCHED_EVENT_RUNNING;
+    
+    bpf_ringbuf_submit(e, 0);
+    
+    struct task_state new_state = {
+        .blocked_time = now,
+        .frame = 0
+    };
+    
+    u64 single_frame = 0;
+    int ret = bpf_get_stack(ctx, &single_frame, sizeof(single_frame), 8 & BPF_F_SKIP_FIELD_MASK);
+    if (ret == sizeof(single_frame)) {
+        new_state.frame = single_frame;
+    }
+    
+    bpf_map_update_elem(&task_states, &tid, &new_state, BPF_ANY);
+}
+
+static __always_inline void handle_task_on_cpu(struct task_struct *task, u64 now)
+{
+    u32 zero = 0;
+    u64 *start = bpf_map_lookup_elem(&cpu_start_time, &zero);
+    if (start) {
+        *start = now;
+    }
+    
+    if (!task || task->pid == 0) {
+        return;
+    }
+    
+    u32 tid = BPF_CORE_READ(task, pid);
+    u32 tgid = BPF_CORE_READ(task, tgid);
+    
+    if (!should_track_tgid(tgid)) {
+        return;
+    }
+    
+    struct task_state *state = bpf_map_lookup_elem(&task_states, &tid);
+    if (state && state->blocked_time > 0 && state->blocked_time < now) {
+        struct sched_span_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+        if (!e) {
+            return;
+        }
+        
+        e->pid = tgid;
+        e->tid = tid;
+        e->start_time = state->blocked_time;
+        e->end_time = now;
+        e->cpu = bpf_get_smp_processor_id();
+        e->frame = state->frame;
+        e->event_type = SCHED_EVENT_BLOCKED;
+        
+        bpf_ringbuf_submit(e, 0);
+    }
 }
 
 SEC("tp_btf/sched_switch")
 int handle_sched_switch(u64 *ctx)
 {
     struct task_struct *prev = (struct task_struct *)ctx[1];
-    u64 end = bpf_ktime_get_ns();
-    u64 start = record_start(end);
+    struct task_struct *next = (struct task_struct *)ctx[2];
+    u64 now = bpf_ktime_get_ns();
     
-    if (start == 0 || start > end) {
-        return 0;
-    }
+    handle_task_off_cpu(prev, now, ctx);
+    handle_task_on_cpu(next, now);
     
-    if (prev->pid == 0) {
-        return 0;
-    }
-    
-    u32 tgid = BPF_CORE_READ(prev, tgid);
-    if (!should_track_tgid(tgid)) {
-        return 0;
-    }
-    
-    struct sched_span_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        return 0;
-    }
-    
-    e->pid = tgid;
-    e->tid = BPF_CORE_READ(prev, pid);
-    e->start_time = start;
-    e->end_time = end;
-    e->cpu = bpf_get_smp_processor_id();
-    
-    bpf_ringbuf_submit(e, 0);
     return 0;
 }
 
