@@ -6,3 +6,4 @@ bpf/src/bpf/*.skel.rs
 *.pftrace
 *.perfetto
 Dockerfile
+local.toml
