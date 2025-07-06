@@ -8,7 +8,8 @@ use crate::{perf_event, BpfError, Filterable};
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::{MapCore, MapFlags, OpenObject, RingBufferBuilder};
 use libbpf_sys::{PERF_COUNT_SW_CPU_CLOCK, PERF_TYPE_SOFTWARE};
-use protocol::{Counter, Event, Labels, Message};
+use protocol::{Counter, Event, Labels, Message, Track, TrackId, TrackType};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -149,6 +150,9 @@ where
             .map_err(|e| BpfError::AttachError(format!("failed to attach bpf programs: {}", e)))?;
 
         let mut thread_stats: HashMap<(i32, i32), ThreadStats> = HashMap::new();
+        let mut submitted_tracks: HashMap<TrackId, ()> = HashMap::new();
+        let mut track_id_mapping: HashMap<(i32, i32), (u64, u64)> = HashMap::new();
+        let mut rng = rand::thread_rng();
         let mut builder = RingBufferBuilder::new();
         let nprocs = libbpf_rs::num_possible_cpus().unwrap();
         let mut boundaries_reported = 0;
@@ -172,6 +176,29 @@ where
                             let elapsed_ns = (max_timestamp - thread_stats.min_timestamp) as f64;
                             let cpu_percent =
                                 (thread_stats.cpu_time_ns as f64 / elapsed_ns) * 100.0;
+
+                            let (cpu_time_id, kernel_time_id) = track_id_mapping
+                                .entry((*pid, *tid))
+                                .or_insert_with(|| (rng.gen::<u64>(), rng.gen::<u64>()));
+
+                            let cpu_time_track_id = TrackId::Counter { id: *cpu_time_id };
+                            submitted_tracks
+                                .entry(cpu_time_track_id)
+                                .or_insert_with(|| {
+                                    let cpu_time_track = Message::Event(Event::Track(Track {
+                                        name: "cpu_time",
+                                        track_type: TrackType::Counter {
+                                            id: *cpu_time_id,
+                                            unit: Some("%"),
+                                        },
+                                        parent: Some(TrackType::Thread {
+                                            tid: *tid,
+                                            pid: *pid,
+                                        }),
+                                    }));
+                                    callback(cpu_time_track);
+                                });
+
                             debug!(
                                 pid = pid,
                                 tid = tid,
@@ -184,8 +211,7 @@ where
                                 name: "cpu_time",
                                 value: cpu_percent,
                                 timestamp: thread_stats.min_timestamp,
-                                tid: *tid,
-                                pid: *pid,
+                                track_id: cpu_time_track_id,
                                 labels: Cow::Owned(Labels::new()),
                                 unit: Some("%"),
                             }));
@@ -193,6 +219,27 @@ where
 
                             let kernel_percent =
                                 (thread_stats.kernel_time_ns as f64 / elapsed_ns) * 100.0;
+
+                            let kernel_time_track_id = TrackId::Counter {
+                                id: *kernel_time_id,
+                            };
+                            submitted_tracks
+                                .entry(kernel_time_track_id)
+                                .or_insert_with(|| {
+                                    let kernel_time_track = Message::Event(Event::Track(Track {
+                                        name: "kernel_time",
+                                        track_type: TrackType::Counter {
+                                            id: *kernel_time_id,
+                                            unit: Some("%"),
+                                        },
+                                        parent: Some(TrackType::Thread {
+                                            tid: *tid,
+                                            pid: *pid,
+                                        }),
+                                    }));
+                                    callback(kernel_time_track);
+                                });
+
                             debug!(
                                 pid = pid,
                                 tid = tid,
@@ -205,8 +252,7 @@ where
                                 name: "kernel_time",
                                 value: kernel_percent,
                                 timestamp: thread_stats.min_timestamp,
-                                tid: *tid,
-                                pid: *pid,
+                                track_id: kernel_time_track_id,
                                 labels: Cow::Owned(Labels::new()),
                                 unit: Some("%"),
                             }));
@@ -301,7 +347,7 @@ mod root_tests {
         #[allow(dead_code)]
         timestamp: u64,
         #[allow(dead_code)]
-        tid: i32,
+        track_id: TrackId,
         pid: i32,
     }
 
@@ -338,12 +384,16 @@ mod root_tests {
         let mut cpuutil = object
             .build(move |message| {
                 if let Message::Event(Event::Counter(c)) = message {
+                    let pid = match &c.track_id {
+                        TrackId::Thread { pid, .. } => *pid,
+                        _ => cpuutil_setup.current_pid as i32,
+                    };
                     let test_counter = TestCounter {
                         name: c.name.to_string(),
                         value: c.value,
                         timestamp: c.timestamp,
-                        tid: c.tid,
-                        pid: c.pid,
+                        track_id: c.track_id,
+                        pid,
                     };
                     events_clone.borrow_mut().push(test_counter);
                 }
@@ -407,12 +457,16 @@ mod root_tests {
         let mut cpuutil = object
             .build(move |message| {
                 if let Message::Event(Event::Counter(c)) = message {
+                    let pid = match &c.track_id {
+                        TrackId::Thread { pid, .. } => *pid,
+                        _ => cpuutil_setup.current_pid as i32,
+                    };
                     let test_counter = TestCounter {
                         name: c.name.to_string(),
                         value: c.value,
                         timestamp: c.timestamp,
-                        tid: c.tid,
-                        pid: c.pid,
+                        track_id: c.track_id,
+                        pid,
                     };
                     events_clone.borrow_mut().push(test_counter);
                 }

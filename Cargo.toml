@@ -40,6 +40,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 vmlinux = { git = "https://github.com/libbpf/vmlinux.h.git", rev = "83a228cf37fc65f2d14e4896a04922b5ee531a94" }
 prost = "0.13"
 prost-build = "0.13"
+rand = "0.8"
 
 [profile.dev]
 debug = true

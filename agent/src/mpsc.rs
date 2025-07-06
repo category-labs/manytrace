@@ -105,8 +105,7 @@ mod tests {
             name: "test_counter",
             value: 42.0,
             timestamp: 1000,
-            tid: 123,
-            pid: 456,
+            track_id: protocol::TrackId::Counter { id: 12345 },
             labels: Cow::Owned(Labels::new()),
             unit: None,
         });
@@ -121,8 +120,12 @@ mod tests {
                         assert_eq!(archived_counter.name.as_bytes(), b"test_counter");
                         assert_eq!(archived_counter.value.to_native(), 42.0);
                         assert_eq!(archived_counter.timestamp.to_native(), 1000);
-                        assert_eq!(archived_counter.tid.to_native(), 123);
-                        assert_eq!(archived_counter.pid.to_native(), 456);
+                        match &archived_counter.track_id {
+                            protocol::ArchivedTrackId::Counter { id } => {
+                                assert_eq!(id.to_native(), 12345);
+                            }
+                            _ => panic!("Expected Counter track_id"),
+                        }
                         events_received += 1;
                         break;
                     }

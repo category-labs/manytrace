@@ -19,6 +19,7 @@ libbpf-sys = { workspace = true }
 libc = { workspace = true }
 ouroboros = "0.18"
 plain = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }

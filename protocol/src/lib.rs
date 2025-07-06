@@ -146,8 +146,7 @@ pub struct Counter<'a> {
     pub name: &'a str,
     pub value: f64,
     pub timestamp: u64,
-    pub tid: i32,
-    pub pid: i32,
+    pub track_id: TrackId,
     #[rkyv(with = AsOwned)]
     pub labels: Cow<'a, Labels<'a>>,
     #[rkyv(with = Map<InlineAsBox>)]
@@ -756,8 +755,7 @@ mod tests {
             name: "test_counter",
             value: 42.0,
             labels: Cow::Owned(Labels::default()),
-            pid: 123,
-            tid: 456,
+            track_id: TrackId::Counter { id: 12345 },
             timestamp: 1000,
             unit: None,
         }
