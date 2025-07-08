@@ -23,6 +23,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
     __uint(key_size, sizeof(int));
     __uint(value_size, sizeof(int));
+    __uint(max_entries, 1);
 } perf_counters SEC(".maps");
 
 const volatile struct {
