@@ -27,10 +27,16 @@ pub struct CpuUtilConfig {
     pub pid_filters: Vec<i32>,
     #[serde(default)]
     pub filter_process: Vec<String>,
+    #[serde(default = "default_ringbuf_size")]
+    pub ringbuf: usize,
 }
 
 fn default_frequency() -> u64 {
     9
+}
+
+fn default_ringbuf_size() -> usize {
+    1024 * 1024
 }
 
 pub struct Object {
@@ -122,7 +128,12 @@ where
             .open(open_object)
             .map_err(|e| BpfError::LoadError(format!("failed to open bpf skeleton: {}", e)))?;
 
-        // Set filter_enabled based on whether we have any filters
+        open_skel
+            .maps
+            .events
+            .set_max_entries(config.ringbuf as u32)
+            .map_err(|e| BpfError::LoadError(format!("failed to set ring buffer size: {}", e)))?;
+
         let filter_enabled = !config.pid_filters.is_empty() || !config.filter_process.is_empty();
         open_skel
             .maps
@@ -378,6 +389,7 @@ mod root_tests {
             frequency: 100,
             pid_filters: vec![cpuutil_setup.current_pid as i32],
             filter_process: vec![],
+            ringbuf: default_ringbuf_size(),
         };
 
         let mut object = Object::new(config);
@@ -451,6 +463,7 @@ mod root_tests {
             frequency: 100,
             pid_filters: vec![cpuutil_setup.current_pid as i32],
             filter_process: vec![],
+            ringbuf: default_ringbuf_size(),
         };
 
         let mut object = Object::new(config);
@@ -475,7 +488,7 @@ mod root_tests {
 
         let start = Instant::now();
         let mut temp_file = NamedTempFile::new().expect("failed to create temp file");
-        let data = vec![0u8; 1024 * 1024]; // 1MB of data
+        let data = vec![0u8; 1024 * 1024];
 
         while start.elapsed() < Duration::from_millis(300) {
             for _ in 0..10 {

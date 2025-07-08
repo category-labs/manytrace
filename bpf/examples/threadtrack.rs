@@ -1,4 +1,4 @@
-use bpf::threadtrack;
+use bpf::{threadtrack, ThreadTrackerConfig};
 use protocol::{Event, Message};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{:<8} {:<8} {:<16} {:<40}", "PID", "TID", "NAME", "TYPE");
     println!("{:-<80}", "");
 
-    let mut builder = threadtrack::Object::new();
+    let mut builder = threadtrack::Object::new(ThreadTrackerConfig::default());
     let mut tracker = builder.build(|message: Message| {
         let event = match message {
             Message::Event(e) => e,

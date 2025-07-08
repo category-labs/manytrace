@@ -29,7 +29,9 @@ filter_process = []
 # Required when using process name filtering in other modules
 
 [bpf.thread_tracker]
-# No configuration options - enabled by presence of section
+# Size of the ring buffer for thread tracker events (in entries)
+# Default: 65536 (64K entries)
+ringbuf = 65536
 
 # ---------------------------
 # CPU Utilization Module
@@ -49,6 +51,10 @@ pid_filters = []
 # If both global and module-specific filters are set, the module-specific filter takes precedence
 # Default: [] (empty - no name filtering)
 filter_process = []
+
+# Size of the ring buffer for CPU utilization events (in entries)
+# Default: 65536 (64K entries)
+ringbuf = 65536
 
 # ---------------------------
 # Profiler Module
@@ -89,6 +95,10 @@ perf_map = false
 # Default: true
 map_files = true
 
+# Size of the ring buffer for profiler events (in entries)
+# Default: 65536 (64K entries)
+ringbuf = 65536
+
 # ---------------------------
 # Scheduler Trace Module
 # ---------------------------
@@ -103,6 +113,10 @@ pid_filters = []
 # If both global and module-specific filters are set, the module-specific filter takes precedence
 # Default: [] (empty - no name filtering)
 filter_process = []
+
+# Size of the ring buffer for scheduler trace events (in entries)
+# Default: 262144 (256K entries)
+ringbuf = 262144
 
 # ===========================
 # User Configuration

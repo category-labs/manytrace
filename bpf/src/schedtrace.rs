@@ -23,12 +23,18 @@ use tracing::debug;
 const SCHED_EVENT_BLOCKED: u32 = 1;
 const SCHED_EVENT_WAKING: u32 = 2;
 
+fn default_ringbuf_size() -> usize {
+    2 * 1024 * 1024
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedTraceConfig {
     #[serde(default)]
     pub pid_filters: Vec<i32>,
     #[serde(default)]
     pub filter_process: Vec<String>,
+    #[serde(default = "default_ringbuf_size")]
+    pub ringbuf: usize,
 }
 
 #[repr(C)]
@@ -102,6 +108,12 @@ where
         let mut open_skel = skel_builder
             .open(open_object)
             .map_err(|e| BpfError::LoadError(format!("failed to open bpf skeleton: {}", e)))?;
+
+        open_skel
+            .maps
+            .events
+            .set_max_entries(config.ringbuf as u32)
+            .map_err(|e| BpfError::LoadError(format!("failed to set ring buffer size: {}", e)))?;
 
         let filter_enabled = !config.pid_filters.is_empty() || !config.filter_process.is_empty();
         open_skel
@@ -291,6 +303,7 @@ mod root_tests {
         let config = SchedTraceConfig {
             pid_filters: vec![current_pid as i32],
             filter_process: vec![],
+            ringbuf: default_ringbuf_size(),
         };
 
         let symbolizer = Symbolizer::new();

@@ -35,6 +35,8 @@ pub struct ProfilerConfig {
     pub perf_map: bool,
     #[serde(default = "default_map_files")]
     pub map_files: bool,
+    #[serde(default = "default_ringbuf_size")]
+    pub ringbuf: usize,
 }
 
 fn default_frequency() -> u64 {
@@ -51,6 +53,10 @@ fn default_debug_syms() -> bool {
 
 fn default_map_files() -> bool {
     true
+}
+
+fn default_ringbuf_size() -> usize {
+    256 * 1024
 }
 
 mod profiler_bpf {
@@ -135,6 +141,12 @@ where
         let mut open_skel = skel_builder
             .open(open_object)
             .map_err(|e| BpfError::LoadError(format!("failed to open bpf skeleton: {}", e)))?;
+
+        open_skel
+            .maps
+            .events
+            .set_max_entries(config.ringbuf as u32)
+            .map_err(|e| BpfError::LoadError(format!("failed to set ring buffer size: {}", e)))?;
 
         let filter_enabled = !config.pid_filters.is_empty() || !config.filter_process.is_empty();
         open_skel
@@ -361,6 +373,7 @@ mod root_tests {
             debug_syms: true,
             perf_map: false,
             map_files: true,
+            ringbuf: default_ringbuf_size(),
         };
 
         let mut object = Object::new(config);

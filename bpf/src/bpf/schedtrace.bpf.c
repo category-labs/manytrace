@@ -31,7 +31,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 256 * 1024);
+    __uint(max_entries, 2 * 1024 * 1024);
 } events SEC(".maps");
 
 struct {
@@ -91,19 +91,17 @@ static __always_inline void handle_task_off_cpu(struct task_struct *task, u64 no
     }
     
     struct sched_span_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e) {
-        return;
+    if (e) {
+        e->pid = tgid;
+        e->tid = tid;
+        e->start_time = *start;
+        e->end_time = now;
+        e->cpu = bpf_get_smp_processor_id();
+        e->frame = -1;
+        e->event_type = SCHED_EVENT_RUNNING;
+        
+        bpf_ringbuf_submit(e, 0);
     }
-    
-    e->pid = tgid;
-    e->tid = tid;
-    e->start_time = *start;
-    e->end_time = now;
-    e->cpu = bpf_get_smp_processor_id();
-    e->frame = -1;
-    e->event_type = SCHED_EVENT_RUNNING;
-    
-    bpf_ringbuf_submit(e, 0);
     
     struct task_state new_state = {
         .blocked_time = now,
@@ -141,19 +139,17 @@ static __always_inline void handle_task_on_cpu(struct task_struct *task, u64 now
     struct task_state *state = bpf_map_lookup_elem(&task_states, &tid);
     if (state && state->blocked_time > 0 && state->blocked_time < now) {
         struct sched_span_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-        if (!e) {
-            return;
+        if (e) {
+            e->pid = tgid;
+            e->tid = tid;
+            e->start_time = state->blocked_time;
+            e->end_time = now;
+            e->cpu = bpf_get_smp_processor_id();
+            e->frame = 0;
+            e->event_type = SCHED_EVENT_WAKING;
+            
+            bpf_ringbuf_submit(e, 0);
         }
-        
-        e->pid = tgid;
-        e->tid = tid;
-        e->start_time = state->blocked_time;
-        e->end_time = now;
-        e->cpu = bpf_get_smp_processor_id();
-        e->frame = 0;
-        e->event_type = SCHED_EVENT_WAKING;
-        
-        bpf_ringbuf_submit(e, 0);
     }
 }
 
@@ -190,19 +186,17 @@ int handle_sched_waking(u64 *ctx)
     struct task_state *state = bpf_map_lookup_elem(&task_states, &tid);
     if (state && state->blocked_time > 0 && state->blocked_time < now) {
         struct sched_span_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-        if (!e) {
-            return 0;
+        if (e) {
+            e->pid = tgid;
+            e->tid = tid;
+            e->start_time = state->blocked_time;
+            e->end_time = now;
+            e->cpu = bpf_get_smp_processor_id();
+            e->frame = state->frame;
+            e->event_type = SCHED_EVENT_BLOCKED;
+            
+            bpf_ringbuf_submit(e, 0);
         }
-        
-        e->pid = tgid;
-        e->tid = tid;
-        e->start_time = state->blocked_time;
-        e->end_time = now;
-        e->cpu = bpf_get_smp_processor_id();
-        e->frame = state->frame;
-        e->event_type = SCHED_EVENT_BLOCKED;
-        
-        bpf_ringbuf_submit(e, 0);
     }
     
     struct task_state new_state = {

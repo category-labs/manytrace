@@ -19,7 +19,14 @@ use std::str;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ThreadTrackerConfig {}
+pub struct ThreadTrackerConfig {
+    #[serde(default = "default_ringbuf_size")]
+    pub ringbuf: usize,
+}
+
+fn default_ringbuf_size() -> usize {
+    256 * 1024
+}
 
 #[repr(C)]
 #[derive(Debug)]
@@ -63,18 +70,20 @@ impl<'a> TryFrom<&'a [u8]> for &'a ThreadEvent {
 
 pub struct Object {
     object: MaybeUninit<libbpf_rs::OpenObject>,
+    config: ThreadTrackerConfig,
 }
 
 impl Default for Object {
     fn default() -> Self {
-        Self::new()
+        Self::new(ThreadTrackerConfig::default())
     }
 }
 
 impl Object {
-    pub fn new() -> Self {
+    pub fn new(config: ThreadTrackerConfig) -> Self {
         Self {
             object: MaybeUninit::uninit(),
+            config,
         }
     }
 
@@ -82,7 +91,7 @@ impl Object {
     where
         F: for<'a> FnMut(Message<'a>) + 'bd,
     {
-        ThreadTracker::new(&mut self.object, callback)
+        ThreadTracker::new(&mut self.object, self.config.clone(), callback)
     }
 }
 
@@ -97,12 +106,22 @@ impl<'this, F> ThreadTracker<'this, F>
 where
     F: for<'a> FnMut(Message<'a>) + 'this,
 {
-    fn new(open_object: &'this mut MaybeUninit<OpenObject>, callback: F) -> Result<Self, BpfError> {
+    fn new(
+        open_object: &'this mut MaybeUninit<OpenObject>,
+        config: ThreadTrackerConfig,
+        callback: F,
+    ) -> Result<Self, BpfError> {
         let skel_builder = ThreadtrackSkelBuilder::default();
 
-        let open_skel = skel_builder
+        let mut open_skel = skel_builder
             .open(open_object)
             .map_err(|e| BpfError::LoadError(format!("failed to open bpf skeleton: {}", e)))?;
+
+        open_skel
+            .maps
+            .events
+            .set_max_entries(config.ringbuf as u32)
+            .map_err(|e| BpfError::LoadError(format!("failed to set ring buffer size: {}", e)))?;
 
         let mut skel = open_skel
             .load()
@@ -290,7 +309,9 @@ mod root_tests {
 
         let events_clone = threadtrack_setup.events.clone();
 
-        let mut object = Object::new();
+        let mut object = Object::new(ThreadTrackerConfig {
+            ringbuf: default_ringbuf_size(),
+        });
         let mut tracker = object
             .build(move |message| {
                 let event = match message {

@@ -24,6 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         frequency: 1000,
         pid_filters: vec![std::process::id() as i32],
         filter_process: vec![],
+        ringbuf: 64 * 1024,
     });
     let mut tracker = builder.build(|message: Message| {
         if let Message::Event(Event::Counter(counter)) = message {

@@ -99,9 +99,9 @@ impl BpfConfig {
             ));
         }
 
-        let threadtrack = if let Some(_cfg) = self.thread_tracker {
+        let threadtrack = if let Some(cfg) = self.thread_tracker {
             debug!("initializing thread tracker");
-            Some(threadtrack::Object::new())
+            Some(threadtrack::Object::new(cfg))
         } else {
             None
         };
