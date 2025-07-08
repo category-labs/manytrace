@@ -165,12 +165,25 @@ impl BpfConfig {
             (None, HashSet::new())
         };
 
+        let perfcounter = if let Some(cfg) = self.perfcounter {
+            debug!(
+                module = "perfcounter",
+                frequency = cfg.frequency,
+                counters = ?cfg.counters,
+                "initializing performance counter"
+            );
+            Some(perfcounter::Object::new(cfg))
+        } else {
+            None
+        };
+
         Ok(BpfObject {
             symbolizer: Symbolizer::new(),
             threadtrack,
             cpuutils,
             profiler,
             schedtrace,
+            perfcounter,
             cpuutil_filters,
             profiler_filters,
             schedtrace_filters,
@@ -184,6 +197,7 @@ pub struct BpfObject {
     cpuutils: Option<cpuutil::Object>,
     profiler: Option<profiler::Object>,
     schedtrace: Option<schedtrace::Object>,
+    perfcounter: Option<perfcounter::Object>,
     cpuutil_filters: HashSet<String>,
     profiler_filters: HashSet<String>,
     schedtrace_filters: HashSet<String>,
@@ -221,9 +235,18 @@ impl BpfObject {
             None
         };
 
+        let perfcounter = if let Some(ref mut obj) = self.perfcounter {
+            let callback = Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>)>;
+            let stream_id = stream_allocator.allocate();
+            Some(obj.build(callback, stream_id)?)
+        } else {
+            None
+        };
+
         let cpuutil_rc = cpuutil.map(|c| Rc::new(RefCell::new(c)));
         let profiler_rc = profiler.map(|p| Rc::new(RefCell::new(p)));
         let schedtrace_rc = schedtrace.map(|s| Rc::new(RefCell::new(s)));
+        let perfcounter_rc = perfcounter.map(|p| Rc::new(RefCell::new(p)));
 
         let threadtrack = if let Some(ref mut obj) = self.threadtrack {
             let has_cpuutil = cpuutil_rc.is_some();
@@ -310,6 +333,7 @@ impl BpfObject {
             cpuutil: cpuutil_rc,
             profiler: profiler_rc,
             schedtrace: schedtrace_rc,
+            perfcounter: perfcounter_rc,
         })
     }
 }
@@ -321,6 +345,7 @@ pub struct BpfConsumer<'this> {
     cpuutil: Option<Rc<RefCell<cpuutil::CpuUtil<'this, Callback<'this>>>>>,
     profiler: Option<Rc<RefCell<profiler::Profiler<'this, Callback<'this>>>>>,
     schedtrace: Option<Rc<RefCell<schedtrace::SchedTrace<'this, Callback<'this>>>>>,
+    perfcounter: Option<Rc<RefCell<perfcounter::PerfCounter<'this, Callback<'this>>>>>,
 }
 
 impl<'this> BpfConsumer<'this> {
@@ -337,6 +362,9 @@ impl<'this> BpfConsumer<'this> {
         if let Some(ref sched) = self.schedtrace {
             sched.borrow_mut().consume()?;
         }
+        if let Some(ref perf) = self.perfcounter {
+            perf.borrow_mut().consume()?;
+        }
         Ok(())
     }
 
@@ -352,6 +380,9 @@ impl<'this> BpfConsumer<'this> {
         }
         if let Some(ref sched) = self.schedtrace {
             sched.borrow_mut().poll(timeout)?;
+        }
+        if let Some(ref perf) = self.perfcounter {
+            perf.borrow_mut().poll(timeout)?;
         }
         Ok(())
     }

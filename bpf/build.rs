@@ -29,4 +29,5 @@ fn main() {
     build_bpf("cpuutil");
     build_bpf("profiler");
     build_bpf("schedtrace");
+    build_bpf("perfcounter");
 }

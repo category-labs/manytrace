@@ -1,14 +1,18 @@
-use crate::{BpfError, Filterable};
-use libbpf_rs::RingBuffer;
+use crate::{perf_event, BpfError, Filterable};
+use libbpf_rs::skel::{OpenSkel, SkelBuilder};
+use libbpf_rs::{MapCore, RingBuffer, RingBufferBuilder};
 use libbpf_sys;
-use protocol::Message;
+use protocol::{Event, Message};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::time::Duration;
 use std::{convert::TryFrom, os::fd::RawFd};
 
 pub const MAX_PERF_COUNTERS: usize = 8;
+
+const PERF_EVENT_IOC_ENABLE: u64 = 0x2400;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -208,23 +212,10 @@ impl PerfCounterConfig {
     }
 }
 
-// mod perfcounter_bpf {
-//     include!(concat!(env!("OUT_DIR"), "/perfcounter.skel.rs"));
-// }
-// use perfcounter_bpf::*;
-#[allow(dead_code)]
-struct PerfcounterSkel<'a> {
-    _phantom: PhantomData<&'a ()>,
+mod perfcounter_bpf {
+    include!(concat!(env!("OUT_DIR"), "/perfcounter.skel.rs"));
 }
-
-#[allow(dead_code)]
-struct PerfcounterSkelBuilder;
-
-impl Default for PerfcounterSkelBuilder {
-    fn default() -> Self {
-        Self
-    }
-}
+use perfcounter_bpf::*;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -284,16 +275,233 @@ where
     F: for<'a> FnMut(Message<'a>) + 'obj,
 {
     fn new(
-        _open_object: &'obj mut MaybeUninit<libbpf_rs::OpenObject>,
-        _callback: F,
+        open_object: &'obj mut MaybeUninit<libbpf_rs::OpenObject>,
+        mut callback: F,
         mut config: PerfCounterConfig,
-        _stream_id: crate::StreamId,
+        stream_id: crate::StreamId,
     ) -> Result<Self, BpfError> {
-        config.validate()?;
+        let derived_info = config.validate()?;
 
-        Err(BpfError::LoadError(
-            "PerfCounter BPF program not yet implemented".to_string(),
-        ))
+        let skel_builder = PerfcounterSkelBuilder::default();
+        let mut open_skel = skel_builder
+            .open(open_object)
+            .map_err(|e| BpfError::LoadError(format!("failed to open bpf skeleton: {}", e)))?;
+
+        open_skel
+            .maps
+            .events
+            .set_max_entries(config.ringbuf as u32)
+            .map_err(|e| BpfError::LoadError(format!("failed to set ring buffer size: {}", e)))?;
+
+        open_skel
+            .maps
+            .rodata_data
+            .as_mut()
+            .unwrap()
+            .cfg
+            .counter_count = config.counters.len() as u32;
+
+        let mut skel = open_skel
+            .load()
+            .map_err(|e| BpfError::LoadError(format!("failed to load bpf program: {}", e)))?;
+
+        let perf_type = libbpf_sys::PERF_TYPE_SOFTWARE;
+        let perf_config = libbpf_sys::PERF_COUNT_SW_CPU_CLOCK;
+
+        let timer_pefds = perf_event::perf_event_per_cpu(perf_type, perf_config, config.frequency)
+            .map_err(|e| {
+                BpfError::AttachError(format!("failed to create timer perf events: {}", e))
+            })?;
+
+        let links = perf_event::attach_perf_event(&timer_pefds, &mut skel.progs.perfcounter_timer)
+            .map_err(|e| {
+                BpfError::AttachError(format!("failed to attach timer perf event: {}", e))
+            })?;
+
+        let nprocs = libbpf_rs::num_possible_cpus()
+            .map_err(|e| BpfError::LoadError(format!("failed to get cpu count: {}", e)))?;
+        let mut perf_fds = Vec::new();
+
+        for (counter_idx, counter) in config.counters.iter().enumerate() {
+            let (name, type_, perf_config) = counter.to_perf_config()?;
+            tracing::debug!(
+                "setting up counter idx={} name={} type={} config={:#x}",
+                counter_idx,
+                name,
+                type_,
+                perf_config
+            );
+
+            let mut counter_fds = Vec::new();
+            for cpu in 0..nprocs {
+                let fd = perf_event::perf_event_open(
+                    type_,
+                    perf_config as u32,
+                    0,
+                    None,
+                    -1,
+                    cpu as i32,
+                    0,
+                )
+                .map_err(|e| {
+                    BpfError::AttachError(format!(
+                        "failed to open perf event for counter {} on cpu {}: {}",
+                        name, cpu, e
+                    ))
+                })?;
+
+                let idx = (cpu * config.counters.len() + counter_idx) as i32;
+                let idx_bytes = idx.to_ne_bytes();
+                let fd_bytes = fd.to_ne_bytes();
+                skel.maps
+                    .perf_counters
+                    .update(&idx_bytes, &fd_bytes, libbpf_rs::MapFlags::ANY)
+                    .map_err(|e| {
+                        BpfError::MapError(format!(
+                            "failed to update perf counter map at idx {}: {}",
+                            idx, e
+                        ))
+                    })?;
+
+                unsafe {
+                    if libc::ioctl(fd, PERF_EVENT_IOC_ENABLE, 0) < 0 {
+                        return Err(BpfError::AttachError(format!(
+                            "failed to enable perf counter: {}",
+                            std::io::Error::last_os_error()
+                        )));
+                    }
+                }
+
+                counter_fds.push(fd);
+            }
+            perf_fds.push(counter_fds);
+        }
+
+        // Emit track events for each counter on each CPU
+        for cpu in 0..nprocs {
+            for (i, counter) in config.counters.iter().enumerate() {
+                let counter_name = match counter {
+                    CounterConfig::Named(name) => name.clone(),
+                    CounterConfig::Custom { name, .. } => name.clone(),
+                };
+
+                let track_name = format!("{}/cpu{}", counter_name, cpu);
+                let track_name_ref: &str = &track_name;
+
+                let track = protocol::Track {
+                    name: track_name_ref,
+                    track_type: protocol::TrackType::Counter {
+                        id: ((cpu as u64) << 32) | (i as u64),
+                        unit: None,
+                    },
+                    parent: Some(protocol::TrackType::Cpu { cpu: cpu as u32 }),
+                };
+
+                callback(Message::Stream {
+                    stream_id,
+                    event: Event::Track(track),
+                });
+            }
+
+            // Emit track for derived counters
+            for (idx, (name, derived)) in derived_info.iter().enumerate() {
+                if derived.is_some() {
+                    let track_name = format!("{}/cpu{}", name, cpu);
+                    let track_name_ref: &str = &track_name;
+
+                    let track = protocol::Track {
+                        name: track_name_ref,
+                        track_type: protocol::TrackType::Counter {
+                            id: ((cpu as u64) << 32) | ((config.counters.len() + idx) as u64),
+                            unit: None,
+                        },
+                        parent: Some(protocol::TrackType::Cpu { cpu: cpu as u32 }),
+                    };
+
+                    callback(Message::Stream {
+                        stream_id,
+                        event: Event::Track(track),
+                    });
+                }
+            }
+        }
+
+        let counters_len = config.counters.len();
+        let derived_info_clone = derived_info.clone();
+        
+        let mut builder = RingBufferBuilder::new();
+        builder
+            .add(&skel.maps.events, move |data: &[u8]| {
+                let event: &PerfCounterEvent = data.try_into().unwrap();
+
+                for (i, &value) in event.counters[..counters_len].iter().enumerate() {
+                    let counter = protocol::Counter {
+                        name: "",
+                        value: value as f64,
+                        timestamp: event.timestamp,
+                        track_id: protocol::TrackId::Counter {
+                            id: ((event.cpu_id as u64) << 32) | (i as u64),
+                        },
+                        labels: Cow::Owned(protocol::Labels::new()),
+                        unit: None,
+                    };
+
+                    callback(Message::Stream {
+                        stream_id,
+                        event: Event::Counter(counter),
+                    });
+                }
+
+                for (idx, (_name, derived)) in derived_info_clone.iter().enumerate() {
+                    if let Some(derived_counter) = derived {
+                        match derived_counter {
+                            DerivedCounter::Ipc {
+                                cycles_idx,
+                                instructions_idx,
+                            } => {
+                                let cycles = event.counters[*cycles_idx];
+                                let instructions = event.counters[*instructions_idx];
+                                let ipc = if cycles > 0 {
+                                    instructions as f64 / cycles as f64
+                                } else {
+                                    0.0
+                                };
+
+                                let counter = protocol::Counter {
+                                    name: "",
+                                    value: ipc,
+                                    timestamp: event.timestamp,
+                                    track_id: protocol::TrackId::Counter {
+                                        id: ((event.cpu_id as u64) << 32)
+                                            | ((counters_len + idx) as u64),
+                                    },
+                                    labels: Cow::Owned(protocol::Labels::new()),
+                                    unit: None,
+                                };
+
+                                callback(Message::Stream {
+                                    stream_id,
+                                    event: Event::Counter(counter),
+                                });
+                            }
+                        }
+                    }
+                }
+                0
+            })
+            .map_err(|e| BpfError::LoadError(format!("failed to add ring buffer: {}", e)))?;
+
+        let rb = builder
+            .build()
+            .map_err(|e| BpfError::LoadError(format!("failed to build ring buffer: {}", e)))?;
+
+        Ok(PerfCounter {
+            _skel: skel,
+            rb,
+            _links: links,
+            _perf_fds: perf_fds,
+            _phantom: PhantomData,
+        })
     }
 
     pub fn consume(&mut self) -> Result<(), BpfError> {
