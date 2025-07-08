@@ -55,6 +55,10 @@ pub(crate) fn set_process_id(id: i32) {
     get_process_id_atomic().store(id, Ordering::Relaxed);
 }
 
+pub(crate) fn reset_process_id() {
+    get_process_id_atomic().store(std::process::id() as i32, Ordering::Relaxed);
+}
+
 #[derive(Error, Debug)]
 pub enum AgentError {
     #[error("IO error: {0}")]

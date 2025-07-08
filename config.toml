@@ -2,20 +2,15 @@
 
 [bpf.profiler]
 frequency = 99
-kernel_samples = true
+kernel_samples = false
 user_samples = true
-filter_process = ["monad-rpc", "monad-node"]
+filter_process = ["monad-node"]
 
-[bpf.cpu_util]
-frequency = 10
-filter_process = ["monad-rpc", "monad-node"]
+[bpf.schedtrace]
+filter_process = ["monad-node"]
 
-[[user]]
-socket = "/home/dshulyak/monad-integration/logs/1node-full-20250630_021259-47d4efab3915e9e5/node0/manytrace/node.sock"
-log_filter = "TRACE"
-random_process_id = true
 
 [[user]]
-socket = "/home/dshulyak/monad-integration/logs/1node-full-20250630_021259-47d4efab3915e9e5/node0/manytrace/rpc.sock"
-log_filter = "TRACE"
+socket = "/home/dshulyak/monad-integration/logs/1node-full-20250708_022608-2e95602706a9e1ed/node0/manytrace/node.sock"
+log_filter = "debug,monad_node=trace,monad_dataplane=trace"
 random_process_id = true

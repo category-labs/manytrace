@@ -235,14 +235,28 @@ impl AgentState {
                             Ok(new_producer) => {
                                 let producer = Arc::new(Producer::from_inner(new_producer));
 
-                                if let Some(protocol::ArchivedValue::Bool(use_random)) =
-                                    args.options.get(crate::RANDOM_PROCESS_ID_OPTION)
-                                {
-                                    if *use_random {
-                                        let random_pid = rand::random::<i32>().abs();
-                                        crate::set_process_id(random_pid);
-                                        debug!(random_pid, "set random process id");
+                                match args.options.get(crate::RANDOM_PROCESS_ID_OPTION) {
+                                    Some(protocol::ArchivedValue::Bool(use_random)) => {
+                                        if *use_random {
+                                            let random_pid = rand::random::<i32>().abs();
+                                            crate::set_process_id(random_pid);
+                                            debug!(random_pid, "set random process id");
+                                        } else {
+                                            crate::reset_process_id();
+                                            debug!(
+                                                pid = crate::get_process_id(),
+                                                "reset to original process id"
+                                            );
+                                        }
                                     }
+                                    None => {
+                                        crate::reset_process_id();
+                                        debug!(
+                                            pid = crate::get_process_id(),
+                                            "reset to original process id"
+                                        );
+                                    }
+                                    _ => {}
                                 }
 
                                 if let Ok(exe_path) = std::env::current_exe() {

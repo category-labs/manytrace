@@ -339,6 +339,63 @@ mod tests {
         assert!(client.enabled());
     }
 
+    #[rstest]
+    fn test_random_process_id_reset_on_restart(temp_socket_path: String, consumer: Consumer) {
+        init_tracing();
+        let original_pid = crate::get_process_id();
+
+        let mut agent = Agent::new(temp_socket_path.clone()).unwrap();
+        wait_for_socket(&temp_socket_path);
+
+        let mut options = std::collections::HashMap::new();
+        options.insert(crate::RANDOM_PROCESS_ID_OPTION, protocol::Value::Bool(true));
+
+        let mut client = AgentClient::new(temp_socket_path.clone());
+        client
+            .start_with_options(
+                &consumer,
+                "debug".to_string(),
+                protocol::TimestampType::Monotonic,
+                options.clone(),
+            )
+            .unwrap();
+
+        let first_random_pid = crate::get_process_id();
+        assert_ne!(
+            original_pid, first_random_pid,
+            "Process ID should be randomized when random_process_id is true"
+        );
+
+        client.stop().unwrap();
+        drop(client);
+        agent.wait_terminated().unwrap();
+        drop(agent);
+
+        thread::sleep(Duration::from_millis(100));
+
+        let mut agent2 = Agent::new(temp_socket_path.clone()).unwrap();
+        wait_for_socket(&temp_socket_path);
+
+        let mut client2 = AgentClient::new(temp_socket_path.clone());
+        client2
+            .start_with_options(
+                &consumer,
+                "debug".to_string(),
+                protocol::TimestampType::Monotonic,
+                std::collections::HashMap::new(),
+            )
+            .unwrap();
+
+        let pid_without_random_option = crate::get_process_id();
+        assert_eq!(
+            original_pid, pid_without_random_option,
+            "Process ID should reset to original when starting without random_process_id option"
+        );
+
+        client2.stop().unwrap();
+        agent2.wait_terminated().unwrap();
+    }
+
     use crate::extension::{AgentHandle, Extension, ExtensionError};
     use protocol::ArchivedTracingArgs;
     use std::sync::Mutex;
