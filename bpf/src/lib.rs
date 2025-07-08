@@ -9,6 +9,7 @@ pub use protocol::Message as BpfMessage;
 
 pub mod cpuutil;
 mod perf_event;
+pub mod perfcounter;
 pub mod profiler;
 pub mod schedtrace;
 pub mod threadtrack;
@@ -18,6 +19,7 @@ pub(crate) trait Filterable {
 }
 
 pub use cpuutil::CpuUtilConfig;
+pub use perfcounter::PerfCounterConfig;
 pub use profiler::ProfilerConfig;
 pub use schedtrace::SchedTraceConfig;
 pub use threadtrack::ThreadTrackerConfig;
@@ -42,6 +44,8 @@ pub struct BpfConfig {
     pub profiler: Option<ProfilerConfig>,
     #[serde(default)]
     pub schedtrace: Option<SchedTraceConfig>,
+    #[serde(default)]
+    pub perfcounter: Option<PerfCounterConfig>,
     #[serde(default)]
     pub filter_process: Vec<String>,
 }
@@ -444,6 +448,142 @@ filter_process = ["test"]
         assert!(result.is_err());
         if let Err(e) = result {
             assert!(e.to_string().contains("Thread tracker must be enabled"));
+        }
+    }
+
+    #[test]
+    fn test_perfcounter_config_parsing() {
+        let config_str = r#"
+[perfcounter]
+frequency = 100
+counters = ["cpu-cycles", "cache-misses", "instructions"]
+"#;
+
+        let config = BpfConfig::from_toml_str(config_str).unwrap();
+        assert!(config.perfcounter.is_some());
+
+        let pc_config = config.perfcounter.as_ref().unwrap();
+        assert_eq!(pc_config.frequency, 100);
+        assert_eq!(pc_config.counters.len(), 3);
+
+        match &pc_config.counters[0] {
+            crate::perfcounter::CounterConfig::Named(name) => assert_eq!(name, "cpu-cycles"),
+            _ => panic!("Expected Named variant"),
+        }
+    }
+
+    #[test]
+    fn test_perfcounter_mixed_counters() {
+        let config_str = r#"
+[perfcounter]
+frequency = 100
+counters = [
+    "cpu-cycles",
+    "cache-misses",
+    { name = "my-raw-event", type = 4, config = 192 }
+]
+"#;
+
+        let config = BpfConfig::from_toml_str(config_str).unwrap();
+        let pc_config = config.perfcounter.as_ref().unwrap();
+        assert_eq!(pc_config.counters.len(), 3);
+
+        match &pc_config.counters[0] {
+            crate::perfcounter::CounterConfig::Named(name) => assert_eq!(name, "cpu-cycles"),
+            _ => panic!("Expected Named variant"),
+        }
+
+        match &pc_config.counters[2] {
+            crate::perfcounter::CounterConfig::Custom {
+                name,
+                perf_type,
+                config,
+            } => {
+                assert_eq!(name, "my-raw-event");
+                assert_eq!(*perf_type, 4);
+                assert_eq!(*config, 192);
+            }
+            _ => panic!("Expected Custom variant"),
+        }
+    }
+
+    #[test]
+    fn test_perfcounter_ipc_expansion() {
+        let config_str = r#"
+[perfcounter]
+counters = ["ipc", "cache-misses"]
+"#;
+
+        let config = BpfConfig::from_toml_str(config_str).unwrap();
+        let mut pc_config = config.perfcounter.unwrap();
+
+        assert_eq!(pc_config.counters.len(), 2);
+        let derived_info = pc_config.expand_counters().unwrap();
+        assert_eq!(pc_config.counters.len(), 3);
+        assert_eq!(derived_info.len(), 2);
+
+        match &pc_config.counters[0] {
+            crate::perfcounter::CounterConfig::Named(name) => assert_eq!(name, "cpu-cycles"),
+            _ => panic!("Expected Named variant"),
+        }
+        match &pc_config.counters[1] {
+            crate::perfcounter::CounterConfig::Named(name) => assert_eq!(name, "cpu-instructions"),
+            _ => panic!("Expected Named variant"),
+        }
+
+        assert_eq!(derived_info[0].0, "ipc");
+        assert!(derived_info[0].1.is_some());
+        assert!(derived_info[1].1.is_none());
+    }
+
+    #[test]
+    fn test_perfcounter_with_filters() {
+        let config_str = r#"
+[perfcounter]
+frequency = 99
+counters = ["cpu-cycles", "instructions"]
+pid_filters = [1234, 5678]
+filter_process = ["chrome", "firefox"]
+ringbuf = 524288
+"#;
+
+        let config = BpfConfig::from_toml_str(config_str).unwrap();
+        let pc_config = config.perfcounter.as_ref().unwrap();
+
+        assert_eq!(pc_config.frequency, 99);
+        assert_eq!(pc_config.pid_filters, vec![1234, 5678]);
+        assert_eq!(pc_config.filter_process, vec!["chrome", "firefox"]);
+        assert_eq!(pc_config.ringbuf, 524288);
+    }
+
+    #[test]
+    fn test_perfcounter_all_counter_types() {
+        let config_str = r#"
+[perfcounter]
+counters = [
+    "cpu-cycles",
+    "instructions",
+    "cpu-instructions",
+    "branches",
+    "branch-instructions",
+    "faults",
+    "page-faults",
+    "cs",
+    "context-switches",
+    "migrations",
+    "cpu-migrations"
+]
+"#;
+
+        let config = BpfConfig::from_toml_str(config_str).unwrap();
+        let pc_config = config.perfcounter.as_ref().unwrap();
+        assert_eq!(pc_config.counters.len(), 11);
+
+        for counter in &pc_config.counters {
+            match counter {
+                crate::perfcounter::CounterConfig::Named(_) => {}
+                _ => panic!("Expected all to be Named variants"),
+            }
         }
     }
 }
