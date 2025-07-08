@@ -428,7 +428,7 @@ where
 
         let counters_len = config.counters.len();
         let derived_info_clone = derived_info.clone();
-        
+
         let mut builder = RingBufferBuilder::new();
         builder
             .add(&skel.maps.events, move |data: &[u8]| {
@@ -618,5 +618,140 @@ mod tests {
         assert_eq!(name, "page-faults");
         assert_eq!(perf_type, libbpf_sys::PERF_TYPE_SOFTWARE);
         assert_eq!(config, libbpf_sys::PERF_COUNT_SW_PAGE_FAULTS as u64);
+    }
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    fn is_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[test]
+    #[ignore = "requires root"]
+    fn test_perfcounter_page_faults_and_ipc() {
+        assert!(is_root());
+
+        let config = PerfCounterConfig {
+            frequency: 99,
+            counters: vec![
+                CounterConfig::Named("page-faults".to_string()),
+                CounterConfig::Named("ipc".to_string()),
+            ],
+            pid_filters: vec![std::process::id() as i32],
+            filter_process: vec![],
+            ringbuf: default_ringbuf_size(),
+        };
+
+        let counter_data = Arc::new(Mutex::new(HashMap::new()));
+        let counter_data_ref = counter_data.clone();
+        let track_count = Arc::new(Mutex::new(0));
+        let track_count_ref = track_count.clone();
+
+        let mut object = Object::new(config);
+        let mut perfcounter = object
+            .build(
+                move |message| match message {
+                    Message::Stream {
+                        event: Event::Counter(counter),
+                        ..
+                    } => {
+                        let mut data = counter_data_ref.lock().unwrap();
+                        let key = (counter.track_id, counter.timestamp);
+                        data.insert(key, counter.value);
+                    }
+                    Message::Stream {
+                        event: Event::Track(_),
+                        ..
+                    } => {
+                        let mut count = track_count_ref.lock().unwrap();
+                        *count += 1;
+                    }
+                    _ => {}
+                },
+                0,
+            )
+            .expect("failed to create perfcounter");
+
+        // Generate some page faults by allocating and touching memory
+        let test_thread = thread::spawn(|| {
+            let mut allocations = Vec::new();
+            for i in 0..10 {
+                let size = 1024 * 1024; // 1MB
+                let mut vec: Vec<u8> = vec![0; size];
+
+                // Touch each page to cause page faults
+                for j in (0..size).step_by(4096) {
+                    vec[j] = (i + j) as u8;
+                }
+
+                allocations.push(vec);
+                thread::sleep(Duration::from_millis(10));
+            }
+
+            // Do some CPU work to generate instructions for IPC calculation
+            let mut sum = 0u64;
+            for _ in 0..1000000 {
+                sum = sum.wrapping_add(1);
+            }
+            sum
+        });
+
+        // Let it run for a bit
+        thread::sleep(Duration::from_millis(200));
+
+        // Consume events
+        for _ in 0..10 {
+            perfcounter.consume().unwrap();
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let _result = test_thread.join().unwrap();
+
+        // Check that we got tracks created
+        let tracks = track_count.lock().unwrap();
+        // Should have created tracks for each counter on each CPU
+        // ipc expands to cpu-cycles and instructions, so we have 3 counters per CPU
+        let expected_tracks = 3 * libbpf_rs::num_possible_cpus().unwrap();
+        assert_eq!(
+            *tracks, expected_tracks,
+            "should have created {} tracks",
+            expected_tracks
+        );
+
+        // Check that we got some counter values
+        let data = counter_data.lock().unwrap();
+        assert!(!data.is_empty(), "should have collected counter data");
+
+        // We should have values for both page faults and IPC
+        let mut has_page_faults = false;
+        let mut has_ipc = false;
+
+        for ((track_id, _), value) in data.iter() {
+            match track_id {
+                protocol::TrackId::Counter { id } => {
+                    let counter_idx = (id & 0xFFFFFFFF) as usize;
+                    if counter_idx == 0 {
+                        // page-faults counter
+                        has_page_faults = true;
+                        assert!(*value > 0.0, "page faults should be > 0");
+                    } else if counter_idx == 2 {
+                        // IPC derived counter (after cpu-cycles and instructions)
+                        has_ipc = true;
+                        assert!(*value > 0.0, "IPC should be > 0");
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert!(has_page_faults, "should have collected page fault data");
+        assert!(has_ipc, "should have collected IPC data");
     }
 }
