@@ -413,7 +413,7 @@ where
 
             for (idx, (name, derived)) in derived_info.iter().enumerate() {
                 if derived.is_some() {
-                    let track_name = format!("{}/cpu{}", name, cpu);
+                    let track_name = format!("{} #{}", name, cpu);
                     let track_name_ref: &str = &track_name;
 
                     let track = protocol::Track {
