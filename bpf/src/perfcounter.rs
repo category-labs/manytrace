@@ -869,10 +869,33 @@ mod root_tests {
         );
     }
 
+    fn has_hardware_counters() -> bool {
+        match perf_event::perf_event_open(
+            libbpf_sys::PERF_TYPE_HARDWARE,
+            libbpf_sys::PERF_COUNT_HW_CPU_CYCLES,
+            0,
+            None,
+            -1,
+            0,
+            0,
+        ) {
+            Ok(fd) => {
+                unsafe { libc::close(fd) };
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     #[test]
     #[ignore = "requires root"]
     fn test_perfcounter_ipc() {
         assert!(is_root());
+
+        if !has_hardware_counters() {
+            eprintln!("skipping IPC test - hardware counters not available");
+            return;
+        }
 
         let config = PerfCounterConfig {
             frequency: 99,
