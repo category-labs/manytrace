@@ -61,10 +61,13 @@ fn main() -> Result<()> {
         .with_context(|| format!("failed to load config path={}", args.config))?;
 
     let running = Arc::new(AtomicBool::new(true));
+    let stopped = Arc::new(AtomicBool::new(false));
     let r = running.clone();
+    let s = stopped.clone();
     ctrlc::set_handler(move || {
         tracing::info!("received ctrl+c, shutting down gracefully...");
         r.store(false, Ordering::SeqCst);
+        s.store(true, Ordering::SeqCst);
     })?;
 
     let file = File::create(&args.output)?;
@@ -81,7 +84,7 @@ fn main() -> Result<()> {
         }
     };
     let mut stream_allocator = protocol::StreamIdAllocator::new();
-    let mut bpf_consumer = bpf_object.consumer(callback, &mut stream_allocator)?;
+    let mut bpf_consumer = bpf_object.consumer(callback, &mut stream_allocator, stopped.clone())?;
 
     let mut user_consumer = if !config.user.is_empty() {
         Some(Consumer::new(config.global.buffer_size)?)

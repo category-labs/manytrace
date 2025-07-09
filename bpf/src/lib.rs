@@ -2,6 +2,7 @@ use blazesym::symbolize::Symbolizer;
 use protocol::{Message, StreamId, StreamIdAllocator};
 use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, collections::HashSet, path::Path, rc::Rc};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use thiserror::Error;
 use tracing::debug;
 
@@ -208,18 +209,35 @@ impl BpfObject {
         &'this mut self,
         callback: F,
         stream_allocator: &mut StreamIdAllocator,
+        stopped: Arc<AtomicBool>,
     ) -> Result<BpfConsumer<'this>, BpfError>
     where
         F: for<'a> FnMut(Message<'a>) + Clone + 'this,
     {
         let cpuutil = if let Some(ref mut obj) = self.cpuutils {
-            Some(obj.build(Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>)>)?)
+            let stopped_ref = stopped.clone();
+            let mut cb = callback.clone();
+            let wrapped_callback = move |message: Message<'_>| {
+                if stopped_ref.load(Ordering::Relaxed) {
+                    return;
+                }
+                cb(message);
+            };
+            Some(obj.build(Box::new(wrapped_callback) as Box<dyn for<'a> FnMut(Message<'a>)>)?)
         } else {
             None
         };
 
         let profiler = if let Some(ref mut obj) = self.profiler {
-            let callback = Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>)>;
+            let stopped_ref = stopped.clone();
+            let mut cb = callback.clone();
+            let wrapped_callback = move |message: Message<'_>| {
+                if stopped_ref.load(Ordering::Relaxed) {
+                    return;
+                }
+                cb(message);
+            };
+            let callback = Box::new(wrapped_callback) as Box<dyn for<'a> FnMut(Message<'a>)>;
             let stream_id = stream_allocator.allocate();
             Some(obj.build(callback, &self.symbolizer, stream_id)?)
         } else {
@@ -227,8 +245,16 @@ impl BpfObject {
         };
 
         let schedtrace = if let Some(ref mut obj) = self.schedtrace {
+            let stopped_ref = stopped.clone();
+            let mut cb = callback.clone();
+            let wrapped_callback = move |message: Message<'_>| {
+                if stopped_ref.load(Ordering::Relaxed) {
+                    return;
+                }
+                cb(message);
+            };
             Some(obj.build(
-                Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>)>,
+                Box::new(wrapped_callback) as Box<dyn for<'a> FnMut(Message<'a>)>,
                 &self.symbolizer,
             )?)
         } else {
@@ -236,7 +262,15 @@ impl BpfObject {
         };
 
         let perfcounter = if let Some(ref mut obj) = self.perfcounter {
-            let callback = Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>)>;
+            let stopped_ref = stopped.clone();
+            let mut cb = callback.clone();
+            let wrapped_callback = move |message: Message<'_>| {
+                if stopped_ref.load(Ordering::Relaxed) {
+                    return;
+                }
+                cb(message);
+            };
+            let callback = Box::new(wrapped_callback) as Box<dyn for<'a> FnMut(Message<'a>)>;
             let stream_id = stream_allocator.allocate();
             Some(obj.build(callback, stream_id)?)
         } else {
@@ -262,7 +296,12 @@ impl BpfObject {
                 let profiler_ref = profiler_rc.clone();
                 let schedtrace_ref = schedtrace_rc.clone();
 
+                let stopped_ref = stopped.clone();
                 let wrapper_callback = move |message: Message<'_>| {
+                    if stopped_ref.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    
                     if let Message::Event(protocol::Event::Track(ref track)) = message {
                         if let protocol::TrackType::Process { pid } = track.track_type {
                             let name = track.name;
@@ -321,7 +360,15 @@ impl BpfObject {
                 let callback = Box::new(wrapper_callback) as Box<dyn for<'a> FnMut(Message<'a>)>;
                 Some(obj.build(callback)?)
             } else {
-                let callback = Box::new(callback) as Box<dyn for<'a> FnMut(Message<'a>)>;
+                let stopped_ref = stopped.clone();
+                let mut cb = callback;
+                let wrapped_callback = move |message: Message<'_>| {
+                    if stopped_ref.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    cb(message);
+                };
+                let callback = Box::new(wrapped_callback) as Box<dyn for<'a> FnMut(Message<'a>)>;
                 Some(obj.build(callback)?)
             }
         } else {
@@ -334,6 +381,7 @@ impl BpfObject {
             profiler: profiler_rc,
             schedtrace: schedtrace_rc,
             perfcounter: perfcounter_rc,
+            stopped,
         })
     }
 }
@@ -346,10 +394,15 @@ pub struct BpfConsumer<'this> {
     profiler: Option<Rc<RefCell<profiler::Profiler<'this, Callback<'this>>>>>,
     schedtrace: Option<Rc<RefCell<schedtrace::SchedTrace<'this, Callback<'this>>>>>,
     perfcounter: Option<Rc<RefCell<perfcounter::PerfCounter<'this, Callback<'this>>>>>,
+    stopped: Arc<AtomicBool>,
 }
 
 impl<'this> BpfConsumer<'this> {
     pub fn consume(&mut self) -> Result<(), BpfError> {
+        if self.stopped.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        
         if let Some(ref mut tracker) = self.threadtrack {
             tracker.consume()?;
         }
@@ -369,6 +422,10 @@ impl<'this> BpfConsumer<'this> {
     }
 
     pub fn poll(&mut self, timeout: std::time::Duration) -> Result<(), BpfError> {
+        if self.stopped.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        
         if let Some(ref mut tracker) = self.threadtrack {
             tracker.poll(timeout)?;
         }
