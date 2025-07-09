@@ -292,7 +292,6 @@ impl<W: Write> PerfettoConverter<W> {
                 instant.labels.as_ref(),
             )?,
             Event::Track(track) => self.convert_track(track)?,
-            Event::PerfCounterEvent(_) => {}
         }
         Ok(())
     }
@@ -361,7 +360,6 @@ impl<W: Write> PerfettoConverter<W> {
 
                 self.convert_track(&owned_track)?
             }
-            ArchivedEvent::PerfCounterEvent(_) => {}
         }
         Ok(())
     }

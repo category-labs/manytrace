@@ -287,19 +287,6 @@ pub enum LogLevel {
 }
 
 #[derive(Archive, Serialize, Deserialize)]
-pub struct PerfCounter {
-    pub name: String,
-    pub value: u64,
-}
-
-#[derive(Archive, Serialize, Deserialize)]
-pub struct PerfCounterEvent {
-    pub timestamp: u64,
-    pub cpu_id: u32,
-    pub counters: Vec<PerfCounter>,
-}
-
-#[derive(Archive, Serialize, Deserialize)]
 pub enum Event<'a> {
     Counter(Counter<'a>),
     Span(Span<'a>),
@@ -307,7 +294,6 @@ pub enum Event<'a> {
     InternedData(InternedData<'a>),
     Sample(Sample),
     Track(Track<'a>),
-    PerfCounterEvent(PerfCounterEvent),
 }
 
 #[derive(Archive, Serialize, Deserialize)]
