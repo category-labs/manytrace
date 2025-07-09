@@ -189,13 +189,16 @@ where
                             _ => "running".to_string(),
                         };
 
+                        let mut labels = Labels::new();
+                        labels.ints.insert("cpu", event.cpu as i64);
+
                         let span = Span {
                             name: span_name.as_str(),
                             span_id: event.start_time,
                             start_timestamp: event.start_time,
                             end_timestamp: event.end_time,
                             track_id,
-                            labels: Cow::Owned(Labels::new()),
+                            labels: Cow::Owned(labels),
                         };
                         callback(Message::Event(Event::Span(span)));
                     }
@@ -287,7 +290,7 @@ mod root_tests {
     #[derive(Debug)]
     enum TestMessage {
         Track { parent_is_thread: bool },
-        Span,
+        Span { name: String, has_cpu_label: bool },
         Other,
     }
 
@@ -318,7 +321,10 @@ mod root_tests {
                                 Some(TrackType::Thread { .. })
                             ),
                         },
-                        Message::Event(Event::Span(_)) => TestMessage::Span,
+                        Message::Event(Event::Span(span)) => TestMessage::Span {
+                            name: span.name.to_string(),
+                            has_cpu_label: span.labels.ints.contains_key("cpu"),
+                        },
                         _ => TestMessage::Other,
                     };
                     messages_clone.borrow_mut().push(test_msg);
@@ -357,11 +363,21 @@ mod root_tests {
             "should have track descriptor with thread as parent"
         );
 
-        let span_count = collected_messages
+        let span_messages: Vec<_> = collected_messages
             .iter()
-            .filter(|msg| matches!(msg, TestMessage::Span))
-            .count();
+            .filter_map(|msg| match msg {
+                TestMessage::Span {
+                    name,
+                    has_cpu_label,
+                } => Some((name, has_cpu_label)),
+                _ => None,
+            })
+            .collect();
 
-        assert!(span_count > 0, "should have produced some spans");
+        assert!(!span_messages.is_empty(), "should have produced some spans");
+
+        for (span_name, has_cpu) in &span_messages {
+            assert!(*has_cpu, "span event '{}' should have cpu label", span_name);
+        }
     }
 }
