@@ -118,6 +118,30 @@ filter_process = []
 # Default: 262144 (256K entries)
 ringbuf = 262144
 
+# ---------------------------
+# Performance Counter Module
+# ---------------------------
+# Collects hardware and software performance counter metrics
+
+[bpf.perfcounter]
+# Sampling frequency in Hz
+# Default: 99
+frequency = 99
+
+# Performance counters to collect
+# Values: "cpu-cycles", "cpu-instructions", "instructions", "cache-references",
+#         "cache-misses", "branch-instructions", "branches", "branch-misses",
+#         "stalled-cycles-frontend", "stalled-cycles-backend", "cpu-clock",
+#         "task-clock", "page-faults", "faults", "context-switches", "cs",
+#         "cpu-migrations", "migrations", "minor-faults", "major-faults", "ipc",
+#         { name = "custom", type = 0, config = 0x1234 }
+# Default: ["cpu-cycles", "cpu-instructions"]
+counters = ["cpu-cycles", "cpu-instructions"]
+
+# Ring buffer size in bytes
+# Default: 262144 (256KB)
+ringbuf = 262144
+
 # ===========================
 # User Configuration
 # ===========================
