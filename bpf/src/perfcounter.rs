@@ -5,6 +5,7 @@ use libbpf_sys;
 use protocol::{Event, Message};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::time::Duration;
@@ -392,7 +393,7 @@ where
                     CounterConfig::Custom { name, .. } => name.clone(),
                 };
 
-                let track_name = format!("{}/cpu{}", counter_name, cpu);
+                let track_name = format!("{} #{}", counter_name, cpu);
                 let track_name_ref: &str = &track_name;
 
                 let track = protocol::Track {
@@ -434,6 +435,7 @@ where
 
         let counters_len = config.counters.len();
         let derived_info_clone = derived_info.clone();
+        let mut previous_values: HashMap<(u32, usize), u64> = HashMap::new();
 
         let mut builder = RingBufferBuilder::new();
         builder
@@ -441,9 +443,22 @@ where
                 let event: &PerfCounterEvent = data.try_into().unwrap();
 
                 for (i, &value) in event.counters[..counters_len].iter().enumerate() {
+                    let key = (event.cpu_id, i);
+                    let delta = if let Some(&prev) = previous_values.get(&key) {
+                        if value >= prev {
+                            value - prev
+                        } else {
+                            value
+                        }
+                    } else {
+                        0
+                    };
+
+                    previous_values.insert(key, value);
+
                     let counter = protocol::Counter {
                         name: "",
-                        value: value as f64,
+                        value: delta as f64,
                         timestamp: event.timestamp,
                         track_id: protocol::TrackId::Counter {
                             id: ((event.cpu_id as u64) << 32) | (i as u64),
@@ -465,10 +480,35 @@ where
                                 cycles_idx,
                                 instructions_idx,
                             } => {
-                                let cycles = event.counters[*cycles_idx];
-                                let instructions = event.counters[*instructions_idx];
-                                let ipc = if cycles > 0 {
-                                    instructions as f64 / cycles as f64
+                                let cycles_key = (event.cpu_id, *cycles_idx);
+                                let instructions_key = (event.cpu_id, *instructions_idx);
+
+                                let cycles_delta =
+                                    if let Some(&prev) = previous_values.get(&cycles_key) {
+                                        let current = event.counters[*cycles_idx];
+                                        if current >= prev {
+                                            current - prev
+                                        } else {
+                                            current
+                                        }
+                                    } else {
+                                        0
+                                    };
+
+                                let instructions_delta =
+                                    if let Some(&prev) = previous_values.get(&instructions_key) {
+                                        let current = event.counters[*instructions_idx];
+                                        if current >= prev {
+                                            current - prev
+                                        } else {
+                                            current
+                                        }
+                                    } else {
+                                        0
+                                    };
+
+                                let ipc = if cycles_delta > 0 {
+                                    instructions_delta as f64 / cycles_delta as f64
                                 } else {
                                     0.0
                                 };
@@ -718,17 +758,25 @@ mod root_tests {
         let data = counter_data.lock().unwrap();
         assert!(!data.is_empty(), "should have collected counter data");
         let mut page_fault_count = 0;
+        let mut total_page_faults = 0.0;
 
         for (_, value) in data.iter() {
             if *value > 0.0 {
                 page_fault_count += 1;
+                total_page_faults += value;
             }
         }
 
         assert!(
             page_fault_count > 0,
-            "should have collected page fault data, got {} samples",
-            data.len()
+            "should have collected page fault data, got {} samples with non-zero deltas",
+            page_fault_count
+        );
+
+        assert!(
+            total_page_faults > 0.0,
+            "should have accumulated page faults from deltas, got {}",
+            total_page_faults
         );
     }
 }
