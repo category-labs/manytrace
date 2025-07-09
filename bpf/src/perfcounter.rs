@@ -15,6 +15,8 @@ pub const MAX_PERF_COUNTERS: usize = 8;
 
 const PERF_EVENT_IOC_ENABLE: u64 = 0x2400;
 
+type DerivedCounterInfo = (Vec<(String, DerivedCounter)>, Vec<bool>);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CounterConfig {
@@ -135,18 +137,15 @@ pub struct PerfCounterConfig {
     #[serde(default = "default_frequency")]
     pub frequency: u64,
     pub counters: Vec<CounterConfig>,
-    #[serde(default)]
-    pub pid_filters: Vec<i32>,
-    #[serde(default)]
-    pub filter_process: Vec<String>,
     #[serde(default = "default_ringbuf_size")]
     pub ringbuf: usize,
 }
 
 impl PerfCounterConfig {
-    pub fn expand_counters(&mut self) -> Result<Vec<(String, Option<DerivedCounter>)>, BpfError> {
+    pub fn expand_counters(&mut self) -> Result<DerivedCounterInfo, BpfError> {
         let mut expanded = Vec::new();
         let mut derived_counters = Vec::new();
+        let mut is_derived_only = Vec::new();
         let mut current_idx = 0;
 
         for counter in &self.counters {
@@ -158,25 +157,28 @@ impl PerfCounterConfig {
                     expanded.push(CounterConfig::Named("cpu-cycles".to_string()));
                     expanded.push(CounterConfig::Named("cpu-instructions".to_string()));
 
+                    is_derived_only.push(true);
+                    is_derived_only.push(true);
+
                     derived_counters.push((
                         "ipc".to_string(),
-                        Some(DerivedCounter::Ipc {
+                        DerivedCounter::Ipc {
                             cycles_idx,
                             instructions_idx,
-                        }),
+                        },
                     ));
                     current_idx += 2;
                 }
                 _ => {
                     expanded.push(counter.clone());
-                    derived_counters.push(("".to_string(), None));
+                    is_derived_only.push(false);
                     current_idx += 1;
                 }
             }
         }
 
         self.counters = expanded;
-        Ok(derived_counters)
+        Ok((derived_counters, is_derived_only))
     }
 }
 
@@ -189,8 +191,8 @@ fn default_ringbuf_size() -> usize {
 }
 
 impl PerfCounterConfig {
-    pub fn validate(&mut self) -> Result<Vec<(String, Option<DerivedCounter>)>, BpfError> {
-        let derived_info = self.expand_counters()?;
+    pub fn validate(&mut self) -> Result<DerivedCounterInfo, BpfError> {
+        let (derived_info, is_derived_only) = self.expand_counters()?;
 
         if self.counters.is_empty() {
             return Err(BpfError::LoadError(
@@ -209,7 +211,7 @@ impl PerfCounterConfig {
             counter.to_perf_config()?;
         }
 
-        Ok(derived_info)
+        Ok((derived_info, is_derived_only))
     }
 }
 
@@ -271,6 +273,129 @@ pub struct PerfCounter<'obj, F> {
     _phantom: PhantomData<F>,
 }
 
+fn process_regular_counters<F>(
+    event: &PerfCounterEvent,
+    counters_len: usize,
+    previous_values: &HashMap<(u32, usize), u64>,
+    is_derived_only: &[bool],
+    stream_id: crate::StreamId,
+    callback: &mut F,
+) where
+    F: for<'a> FnMut(Message<'a>),
+{
+    for (i, &value) in event.counters[..counters_len].iter().enumerate() {
+        if is_derived_only[i] {
+            continue;
+        }
+
+        let key = (event.cpu_id, i);
+        let delta = if let Some(&prev) = previous_values.get(&key) {
+            if value >= prev {
+                value - prev
+            } else {
+                value
+            }
+        } else {
+            0
+        };
+
+        let counter = protocol::Counter {
+            name: "",
+            value: delta as f64,
+            timestamp: event.timestamp,
+            track_id: protocol::TrackId::Counter {
+                id: ((event.cpu_id as u64) << 32) | (i as u64),
+            },
+            labels: Cow::Owned(protocol::Labels::new()),
+            unit: None,
+        };
+
+        callback(Message::Stream {
+            stream_id,
+            event: Event::Counter(counter),
+        });
+    }
+}
+
+fn process_derived_counters<F>(
+    event: &PerfCounterEvent,
+    counters_len: usize,
+    derived_info: &[(String, DerivedCounter)],
+    previous_values: &HashMap<(u32, usize), u64>,
+    stream_id: crate::StreamId,
+    callback: &mut F,
+) where
+    F: for<'a> FnMut(Message<'a>),
+{
+    for (idx, (_name, derived)) in derived_info.iter().enumerate() {
+        match derived {
+            DerivedCounter::Ipc {
+                cycles_idx,
+                instructions_idx,
+            } => {
+                let cycles_key = (event.cpu_id, *cycles_idx);
+                let instructions_key = (event.cpu_id, *instructions_idx);
+
+                let cycles_delta = if let Some(&prev) = previous_values.get(&cycles_key) {
+                    let current = event.counters[*cycles_idx];
+                    if current >= prev {
+                        current - prev
+                    } else {
+                        current
+                    }
+                } else {
+                    0
+                };
+
+                let instructions_delta = if let Some(&prev) = previous_values.get(&instructions_key)
+                {
+                    let current = event.counters[*instructions_idx];
+                    if current >= prev {
+                        current - prev
+                    } else {
+                        current
+                    }
+                } else {
+                    0
+                };
+
+                let ipc = if cycles_delta > 0 {
+                    instructions_delta as f64 / cycles_delta as f64
+                } else {
+                    0.0
+                };
+
+                let counter = protocol::Counter {
+                    name: "",
+                    value: ipc,
+                    timestamp: event.timestamp,
+                    track_id: protocol::TrackId::Counter {
+                        id: ((event.cpu_id as u64) << 32) | ((counters_len + idx) as u64),
+                    },
+                    labels: Cow::Owned(protocol::Labels::new()),
+                    unit: None,
+                };
+
+                callback(Message::Stream {
+                    stream_id,
+                    event: Event::Counter(counter),
+                });
+            }
+        }
+    }
+}
+
+fn update_previous_values(
+    event: &PerfCounterEvent,
+    counters_len: usize,
+    previous_values: &mut HashMap<(u32, usize), u64>,
+) {
+    for (i, &value) in event.counters[..counters_len].iter().enumerate() {
+        let key = (event.cpu_id, i);
+        previous_values.insert(key, value);
+    }
+}
+
 impl<'obj, F> PerfCounter<'obj, F>
 where
     F: for<'a> FnMut(Message<'a>) + 'obj,
@@ -281,7 +406,7 @@ where
         mut config: PerfCounterConfig,
         stream_id: crate::StreamId,
     ) -> Result<Self, BpfError> {
-        let derived_info = config.validate()?;
+        let (derived_info, is_derived_only) = config.validate()?;
 
         let skel_builder = PerfcounterSkelBuilder::default();
         let mut open_skel = skel_builder
@@ -388,6 +513,10 @@ where
 
         for cpu in 0..nprocs {
             for (i, counter) in config.counters.iter().enumerate() {
+                if is_derived_only[i] {
+                    continue;
+                }
+
                 let counter_name = match counter {
                     CounterConfig::Named(name) => name.clone(),
                     CounterConfig::Custom { name, .. } => name.clone(),
@@ -411,30 +540,29 @@ where
                 });
             }
 
-            for (idx, (name, derived)) in derived_info.iter().enumerate() {
-                if derived.is_some() {
-                    let track_name = format!("{} #{}", name, cpu);
-                    let track_name_ref: &str = &track_name;
+            for (idx, (name, _derived)) in derived_info.iter().enumerate() {
+                let track_name = format!("{} #{}", name, cpu);
+                let track_name_ref: &str = &track_name;
 
-                    let track = protocol::Track {
-                        name: track_name_ref,
-                        track_type: protocol::TrackType::Counter {
-                            id: ((cpu as u64) << 32) | ((config.counters.len() + idx) as u64),
-                            unit: None,
-                        },
-                        parent: Some(protocol::TrackType::Cpu { cpu: cpu as u32 }),
-                    };
+                let track = protocol::Track {
+                    name: track_name_ref,
+                    track_type: protocol::TrackType::Counter {
+                        id: ((cpu as u64) << 32) | ((config.counters.len() + idx) as u64),
+                        unit: None,
+                    },
+                    parent: Some(protocol::TrackType::Cpu { cpu: cpu as u32 }),
+                };
 
-                    callback(Message::Stream {
-                        stream_id,
-                        event: Event::Track(track),
-                    });
-                }
+                callback(Message::Stream {
+                    stream_id,
+                    event: Event::Track(track),
+                });
             }
         }
 
         let counters_len = config.counters.len();
         let derived_info_clone = derived_info.clone();
+        let is_derived_only_clone = is_derived_only.clone();
         let mut previous_values: HashMap<(u32, usize), u64> = HashMap::new();
 
         let mut builder = RingBufferBuilder::new();
@@ -442,97 +570,26 @@ where
             .add(&skel.maps.events, move |data: &[u8]| {
                 let event: &PerfCounterEvent = data.try_into().unwrap();
 
-                for (i, &value) in event.counters[..counters_len].iter().enumerate() {
-                    let key = (event.cpu_id, i);
-                    let delta = if let Some(&prev) = previous_values.get(&key) {
-                        if value >= prev {
-                            value - prev
-                        } else {
-                            value
-                        }
-                    } else {
-                        0
-                    };
+                process_regular_counters(
+                    event,
+                    counters_len,
+                    &previous_values,
+                    &is_derived_only_clone,
+                    stream_id,
+                    &mut callback,
+                );
 
-                    previous_values.insert(key, value);
+                process_derived_counters(
+                    event,
+                    counters_len,
+                    &derived_info_clone,
+                    &previous_values,
+                    stream_id,
+                    &mut callback,
+                );
 
-                    let counter = protocol::Counter {
-                        name: "",
-                        value: delta as f64,
-                        timestamp: event.timestamp,
-                        track_id: protocol::TrackId::Counter {
-                            id: ((event.cpu_id as u64) << 32) | (i as u64),
-                        },
-                        labels: Cow::Owned(protocol::Labels::new()),
-                        unit: None,
-                    };
+                update_previous_values(event, counters_len, &mut previous_values);
 
-                    callback(Message::Stream {
-                        stream_id,
-                        event: Event::Counter(counter),
-                    });
-                }
-
-                for (idx, (_name, derived)) in derived_info_clone.iter().enumerate() {
-                    if let Some(derived_counter) = derived {
-                        match derived_counter {
-                            DerivedCounter::Ipc {
-                                cycles_idx,
-                                instructions_idx,
-                            } => {
-                                let cycles_key = (event.cpu_id, *cycles_idx);
-                                let instructions_key = (event.cpu_id, *instructions_idx);
-
-                                let cycles_delta =
-                                    if let Some(&prev) = previous_values.get(&cycles_key) {
-                                        let current = event.counters[*cycles_idx];
-                                        if current >= prev {
-                                            current - prev
-                                        } else {
-                                            current
-                                        }
-                                    } else {
-                                        0
-                                    };
-
-                                let instructions_delta =
-                                    if let Some(&prev) = previous_values.get(&instructions_key) {
-                                        let current = event.counters[*instructions_idx];
-                                        if current >= prev {
-                                            current - prev
-                                        } else {
-                                            current
-                                        }
-                                    } else {
-                                        0
-                                    };
-
-                                let ipc = if cycles_delta > 0 {
-                                    instructions_delta as f64 / cycles_delta as f64
-                                } else {
-                                    0.0
-                                };
-
-                                let counter = protocol::Counter {
-                                    name: "",
-                                    value: ipc,
-                                    timestamp: event.timestamp,
-                                    track_id: protocol::TrackId::Counter {
-                                        id: ((event.cpu_id as u64) << 32)
-                                            | ((counters_len + idx) as u64),
-                                    },
-                                    labels: Cow::Owned(protocol::Labels::new()),
-                                    unit: None,
-                                };
-
-                                callback(Message::Stream {
-                                    stream_id,
-                                    event: Event::Counter(counter),
-                                });
-                            }
-                        }
-                    }
-                }
                 0
             })
             .map_err(|e| BpfError::LoadError(format!("failed to add ring buffer: {}", e)))?;
@@ -591,7 +648,8 @@ mod tests {
             .push(CounterConfig::Named("cpu-cycles".to_string()));
         let result = config.validate();
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 1);
+        let (derived_info, _is_derived_only) = result.unwrap();
+        assert_eq!(derived_info.len(), 0);
 
         let mut config2 = PerfCounterConfig::default();
         config2
@@ -624,7 +682,7 @@ mod tests {
             .push(CounterConfig::Named("ipc".to_string()));
 
         assert_eq!(config.counters.len(), 1);
-        let derived_info = config.expand_counters().unwrap();
+        let (derived_info, _is_derived_only) = config.expand_counters().unwrap();
         assert_eq!(config.counters.len(), 2);
         assert_eq!(derived_info.len(), 1);
 
@@ -640,14 +698,13 @@ mod tests {
         let (name, derived) = &derived_info[0];
         assert_eq!(name, "ipc");
         match derived {
-            Some(DerivedCounter::Ipc {
+            DerivedCounter::Ipc {
                 cycles_idx,
                 instructions_idx,
-            }) => {
+            } => {
                 assert_eq!(*cycles_idx, 0);
                 assert_eq!(*instructions_idx, 1);
             }
-            _ => panic!("Expected Ipc derived counter"),
         }
     }
 
@@ -687,8 +744,6 @@ mod root_tests {
         let config = PerfCounterConfig {
             frequency: 99,
             counters: vec![CounterConfig::Named("page-faults".to_string())],
-            pid_filters: vec![std::process::id() as i32],
-            filter_process: vec![],
             ringbuf: default_ringbuf_size(),
         };
 
@@ -778,5 +833,112 @@ mod root_tests {
             "should have accumulated page faults from deltas, got {}",
             total_page_faults
         );
+    }
+
+    #[test]
+    #[ignore = "requires root"]
+    fn test_perfcounter_ipc() {
+        assert!(is_root());
+
+        let config = PerfCounterConfig {
+            frequency: 99,
+            counters: vec![CounterConfig::Named("ipc".to_string())],
+            ringbuf: default_ringbuf_size(),
+        };
+
+        let track_names = Arc::new(Mutex::new(HashMap::<u64, String>::new()));
+        let track_names_ref = track_names.clone();
+        let counter_data = Arc::new(Mutex::new(HashMap::<String, Vec<f64>>::new()));
+        let counter_data_ref = counter_data.clone();
+        let track_count = Arc::new(Mutex::new(0));
+        let track_count_ref = track_count.clone();
+
+        let mut object = Object::new(config);
+        let mut perfcounter = object
+            .build(
+                move |message| match message {
+                    Message::Stream {
+                        event: Event::Counter(counter),
+                        ..
+                    } => {
+                        let mut data = counter_data_ref.lock().unwrap();
+                        let tracks = track_names_ref.lock().unwrap();
+                        if let protocol::TrackId::Counter { id } = counter.track_id {
+                            if let Some(track_name) = tracks.get(&id) {
+                                data.entry(track_name.clone())
+                                    .or_default()
+                                    .push(counter.value);
+                            }
+                        }
+                    }
+                    Message::Stream {
+                        event: Event::Track(track),
+                        ..
+                    } => {
+                        let mut count = track_count_ref.lock().unwrap();
+                        *count += 1;
+
+                        let mut tracks = track_names_ref.lock().unwrap();
+                        if let protocol::TrackType::Counter { id, .. } = track.track_type {
+                            tracks.insert(id, track.name.to_string());
+                        }
+                    }
+                    _ => {}
+                },
+                0,
+            )
+            .expect("failed to create perfcounter");
+
+        let test_thread = thread::spawn(|| {
+            let mut sum = 0u64;
+            for i in 0..1_000_000 {
+                sum = sum.wrapping_add(i);
+                if i % 100_000 == 0 {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+            sum
+        });
+
+        thread::sleep(Duration::from_millis(500));
+        for _ in 0..20 {
+            perfcounter.consume().unwrap();
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let _result = test_thread.join().unwrap();
+
+        let tracks = track_count.lock().unwrap();
+        let ncpus = libbpf_rs::num_possible_cpus().unwrap();
+        let expected_tracks = ncpus;
+        assert_eq!(
+            *tracks, expected_tracks,
+            "should have created {} tracks (only ipc per cpu)",
+            expected_tracks
+        );
+
+        let data = counter_data.lock().unwrap();
+        assert!(!data.is_empty(), "should have collected counter data");
+
+        let mut ipc_track_count = 0;
+        let mut total_ipc_samples = 0;
+
+        for (track_name, values) in data.iter() {
+            if track_name.starts_with("ipc #") {
+                ipc_track_count += 1;
+                total_ipc_samples += values.len();
+
+                let non_zero_values: Vec<_> = values.iter().filter(|&&v| v > 0.0).collect();
+                assert!(
+                    !non_zero_values.is_empty(),
+                    "IPC track '{}' should have non-zero values",
+                    track_name
+                );
+            }
+        }
+
+        assert_eq!(ipc_track_count, ncpus, "should have IPC track for each CPU");
+
+        assert!(total_ipc_samples > 0, "should have collected IPC samples");
     }
 }

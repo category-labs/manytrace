@@ -549,9 +549,9 @@ counters = ["ipc", "cache-misses"]
         let mut pc_config = config.perfcounter.unwrap();
 
         assert_eq!(pc_config.counters.len(), 2);
-        let derived_info = pc_config.expand_counters().unwrap();
+        let (derived_info, _is_derived_only) = pc_config.expand_counters().unwrap();
         assert_eq!(pc_config.counters.len(), 3);
-        assert_eq!(derived_info.len(), 2);
+        assert_eq!(derived_info.len(), 1);
 
         match &pc_config.counters[0] {
             crate::perfcounter::CounterConfig::Named(name) => assert_eq!(name, "cpu-cycles"),
@@ -561,30 +561,12 @@ counters = ["ipc", "cache-misses"]
             crate::perfcounter::CounterConfig::Named(name) => assert_eq!(name, "cpu-instructions"),
             _ => panic!("Expected Named variant"),
         }
+        match &pc_config.counters[2] {
+            crate::perfcounter::CounterConfig::Named(name) => assert_eq!(name, "cache-misses"),
+            _ => panic!("Expected Named variant"),
+        }
 
         assert_eq!(derived_info[0].0, "ipc");
-        assert!(derived_info[0].1.is_some());
-        assert!(derived_info[1].1.is_none());
-    }
-
-    #[test]
-    fn test_perfcounter_with_filters() {
-        let config_str = r#"
-[perfcounter]
-frequency = 99
-counters = ["cpu-cycles", "instructions"]
-pid_filters = [1234, 5678]
-filter_process = ["chrome", "firefox"]
-ringbuf = 524288
-"#;
-
-        let config = BpfConfig::from_toml_str(config_str).unwrap();
-        let pc_config = config.perfcounter.as_ref().unwrap();
-
-        assert_eq!(pc_config.frequency, 99);
-        assert_eq!(pc_config.pid_filters, vec![1234, 5678]);
-        assert_eq!(pc_config.filter_process, vec!["chrome", "firefox"]);
-        assert_eq!(pc_config.ringbuf, 524288);
     }
 
     #[test]
