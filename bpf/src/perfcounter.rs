@@ -183,7 +183,7 @@ impl PerfCounterConfig {
 }
 
 fn default_frequency() -> u64 {
-    99
+    9
 }
 
 fn default_ringbuf_size() -> usize {
@@ -396,6 +396,11 @@ fn update_previous_values(
     }
 }
 
+fn format_track_name(name: &str, cpu: usize, cpu_count: usize) -> String {
+    let cpu_width = (cpu_count - 1).to_string().len();
+    format!("{} #{:0width$}", name, cpu, width = cpu_width)
+}
+
 impl<'obj, F> PerfCounter<'obj, F>
 where
     F: for<'a> FnMut(Message<'a>) + 'obj,
@@ -522,7 +527,7 @@ where
                     CounterConfig::Custom { name, .. } => name.clone(),
                 };
 
-                let track_name = format!("{} #{}", counter_name, cpu);
+                let track_name = format_track_name(&counter_name, cpu, nprocs);
                 let track_name_ref: &str = &track_name;
 
                 let track = protocol::Track {
@@ -541,7 +546,7 @@ where
             }
 
             for (idx, (name, _derived)) in derived_info.iter().enumerate() {
-                let track_name = format!("{} #{}", name, cpu);
+                let track_name = format_track_name(name, cpu, nprocs);
                 let track_name_ref: &str = &track_name;
 
                 let track = protocol::Track {
@@ -706,6 +711,35 @@ mod tests {
                 assert_eq!(*instructions_idx, 1);
             }
         }
+    }
+
+    #[test]
+    fn test_track_name_formatting() {
+        assert_eq!(format_track_name("ipc", 0, 24), "ipc #00");
+        assert_eq!(format_track_name("ipc", 1, 24), "ipc #01");
+        assert_eq!(format_track_name("ipc", 9, 24), "ipc #09");
+        assert_eq!(format_track_name("ipc", 10, 24), "ipc #10");
+        assert_eq!(format_track_name("ipc", 23, 24), "ipc #23");
+
+        assert_eq!(format_track_name("ipc", 0, 8), "ipc #0");
+        assert_eq!(format_track_name("ipc", 7, 8), "ipc #7");
+
+        assert_eq!(format_track_name("cpu-cycles", 0, 100), "cpu-cycles #00");
+        assert_eq!(format_track_name("cpu-cycles", 9, 100), "cpu-cycles #09");
+        assert_eq!(format_track_name("cpu-cycles", 99, 100), "cpu-cycles #99");
+
+        assert_eq!(
+            format_track_name("page-faults", 0, 1000),
+            "page-faults #000"
+        );
+        assert_eq!(
+            format_track_name("page-faults", 99, 1000),
+            "page-faults #099"
+        );
+        assert_eq!(
+            format_track_name("page-faults", 999, 1000),
+            "page-faults #999"
+        );
     }
 
     #[test]

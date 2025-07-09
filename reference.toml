@@ -125,8 +125,8 @@ ringbuf = 262144
 
 [bpf.perfcounter]
 # Sampling frequency in Hz
-# Default: 99
-frequency = 99
+# Default: 9
+frequency = 9
 
 # Performance counters to collect
 # Values: "cpu-cycles", "cpu-instructions", "instructions", "cache-references",
