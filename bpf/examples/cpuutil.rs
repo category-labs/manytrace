@@ -48,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             }
         }
+        0
     })?;
 
     while running.load(Ordering::SeqCst) {

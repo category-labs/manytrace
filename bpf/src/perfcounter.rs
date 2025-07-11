@@ -259,7 +259,7 @@ impl Object {
         stream_id: crate::StreamId,
     ) -> Result<PerfCounter<'obj, F>, BpfError>
     where
-        F: for<'a> FnMut(Message<'a>) + 'obj,
+        F: for<'a> FnMut(Message<'a>) -> i32 + 'obj,
     {
         PerfCounter::new(&mut self.object, callback, self.config.clone(), stream_id)
     }
@@ -280,8 +280,9 @@ fn process_regular_counters<F>(
     is_derived_only: &[bool],
     stream_id: crate::StreamId,
     callback: &mut F,
-) where
-    F: for<'a> FnMut(Message<'a>),
+) -> i32
+where
+    F: for<'a> FnMut(Message<'a>) -> i32,
 {
     for (i, &value) in event.counters[..counters_len].iter().enumerate() {
         if is_derived_only[i] {
@@ -310,11 +311,15 @@ fn process_regular_counters<F>(
             unit: None,
         };
 
-        callback(Message::Stream {
+        if callback(Message::Stream {
             stream_id,
             event: Event::Counter(counter),
-        });
+        }) != 0
+        {
+            return 1;
+        }
     }
+    0
 }
 
 fn process_derived_counters<F>(
@@ -324,8 +329,9 @@ fn process_derived_counters<F>(
     previous_values: &HashMap<(u32, usize), u64>,
     stream_id: crate::StreamId,
     callback: &mut F,
-) where
-    F: for<'a> FnMut(Message<'a>),
+) -> i32
+where
+    F: for<'a> FnMut(Message<'a>) -> i32,
 {
     for (idx, (_name, derived)) in derived_info.iter().enumerate() {
         match derived {
@@ -376,13 +382,17 @@ fn process_derived_counters<F>(
                     unit: None,
                 };
 
-                callback(Message::Stream {
+                if callback(Message::Stream {
                     stream_id,
                     event: Event::Counter(counter),
-                });
+                }) != 0
+                {
+                    return 1;
+                }
             }
         }
     }
+    0
 }
 
 fn update_previous_values(
@@ -403,7 +413,7 @@ fn format_track_name(name: &str, cpu: usize, cpu_count: usize) -> String {
 
 impl<'obj, F> PerfCounter<'obj, F>
 where
-    F: for<'a> FnMut(Message<'a>) + 'obj,
+    F: for<'a> FnMut(Message<'a>) -> i32 + 'obj,
 {
     fn new(
         open_object: &'obj mut MaybeUninit<libbpf_rs::OpenObject>,
@@ -539,10 +549,13 @@ where
                     parent: Some(protocol::TrackType::Cpu { cpu: cpu as u32 }),
                 };
 
-                callback(Message::Stream {
+                if callback(Message::Stream {
                     stream_id,
                     event: Event::Track(track),
-                });
+                }) != 0
+                {
+                    return Err(BpfError::LoadError("callback terminated".to_string()));
+                }
             }
 
             for (idx, (name, _derived)) in derived_info.iter().enumerate() {
@@ -558,10 +571,13 @@ where
                     parent: Some(protocol::TrackType::Cpu { cpu: cpu as u32 }),
                 };
 
-                callback(Message::Stream {
+                if callback(Message::Stream {
                     stream_id,
                     event: Event::Track(track),
-                });
+                }) != 0
+                {
+                    return Err(BpfError::LoadError("callback terminated".to_string()));
+                }
             }
         }
 
@@ -575,23 +591,29 @@ where
             .add(&skel.maps.events, move |data: &[u8]| {
                 let event: &PerfCounterEvent = data.try_into().unwrap();
 
-                process_regular_counters(
+                if process_regular_counters(
                     event,
                     counters_len,
                     &previous_values,
                     &is_derived_only_clone,
                     stream_id,
                     &mut callback,
-                );
+                ) != 0
+                {
+                    return 1;
+                }
 
-                process_derived_counters(
+                if process_derived_counters(
                     event,
                     counters_len,
                     &derived_info_clone,
                     &previous_values,
                     stream_id,
                     &mut callback,
-                );
+                ) != 0
+                {
+                    return 1;
+                }
 
                 update_previous_values(event, counters_len, &mut previous_values);
 
@@ -632,7 +654,7 @@ where
 
 impl<'obj, F> Filterable for PerfCounter<'obj, F>
 where
-    F: for<'a> FnMut(Message<'a>) + 'obj,
+    F: for<'a> FnMut(Message<'a>) -> i32 + 'obj,
 {
     fn filter(&mut self, _pid: i32) -> Result<(), BpfError> {
         Ok(())
@@ -789,23 +811,26 @@ mod root_tests {
         let mut object = Object::new(config);
         let mut perfcounter = object
             .build(
-                move |message| match message {
-                    Message::Stream {
-                        event: Event::Counter(counter),
-                        ..
-                    } => {
-                        let mut data = counter_data_ref.lock().unwrap();
-                        let key = (counter.track_id, counter.timestamp);
-                        data.insert(key, counter.value);
+                move |message| {
+                    match message {
+                        Message::Stream {
+                            event: Event::Counter(counter),
+                            ..
+                        } => {
+                            let mut data = counter_data_ref.lock().unwrap();
+                            let key = (counter.track_id, counter.timestamp);
+                            data.insert(key, counter.value);
+                        }
+                        Message::Stream {
+                            event: Event::Track(_),
+                            ..
+                        } => {
+                            let mut count = track_count_ref.lock().unwrap();
+                            *count += 1;
+                        }
+                        _ => {}
                     }
-                    Message::Stream {
-                        event: Event::Track(_),
-                        ..
-                    } => {
-                        let mut count = track_count_ref.lock().unwrap();
-                        *count += 1;
-                    }
-                    _ => {}
+                    0
                 },
                 0,
             )
@@ -913,34 +938,37 @@ mod root_tests {
         let mut object = Object::new(config);
         let mut perfcounter = object
             .build(
-                move |message| match message {
-                    Message::Stream {
-                        event: Event::Counter(counter),
-                        ..
-                    } => {
-                        let mut data = counter_data_ref.lock().unwrap();
-                        let tracks = track_names_ref.lock().unwrap();
-                        if let protocol::TrackId::Counter { id } = counter.track_id {
-                            if let Some(track_name) = tracks.get(&id) {
-                                data.entry(track_name.clone())
-                                    .or_default()
-                                    .push(counter.value);
+                move |message| {
+                    match message {
+                        Message::Stream {
+                            event: Event::Counter(counter),
+                            ..
+                        } => {
+                            let mut data = counter_data_ref.lock().unwrap();
+                            let tracks = track_names_ref.lock().unwrap();
+                            if let protocol::TrackId::Counter { id } = counter.track_id {
+                                if let Some(track_name) = tracks.get(&id) {
+                                    data.entry(track_name.clone())
+                                        .or_default()
+                                        .push(counter.value);
+                                }
                             }
                         }
-                    }
-                    Message::Stream {
-                        event: Event::Track(track),
-                        ..
-                    } => {
-                        let mut count = track_count_ref.lock().unwrap();
-                        *count += 1;
+                        Message::Stream {
+                            event: Event::Track(track),
+                            ..
+                        } => {
+                            let mut count = track_count_ref.lock().unwrap();
+                            *count += 1;
 
-                        let mut tracks = track_names_ref.lock().unwrap();
-                        if let protocol::TrackType::Counter { id, .. } = track.track_type {
-                            tracks.insert(id, track.name.to_string());
+                            let mut tracks = track_names_ref.lock().unwrap();
+                            if let protocol::TrackType::Counter { id, .. } = track.track_type {
+                                tracks.insert(id, track.name.to_string());
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
+                    0
                 },
                 0,
             )

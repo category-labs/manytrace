@@ -54,7 +54,7 @@ impl Object {
 
     pub fn build<'bd, F>(&'bd mut self, callback: F) -> Result<CpuUtil<'bd, F>, BpfError>
     where
-        F: for<'a> FnMut(Message<'a>) + 'bd,
+        F: for<'a> FnMut(Message<'a>) -> i32 + 'bd,
     {
         let util = CpuUtil::new(
             &mut self.object,
@@ -114,7 +114,7 @@ pub struct CpuUtil<'this, F> {
 
 impl<'this, F> CpuUtil<'this, F>
 where
-    F: for<'a> FnMut(Message<'a>) + 'this,
+    F: for<'a> FnMut(Message<'a>) -> i32 + 'this,
 {
     fn new(
         open_object: &'this mut MaybeUninit<OpenObject>,
@@ -193,22 +193,25 @@ where
                                 .or_insert_with(|| (rng.gen::<u64>(), rng.gen::<u64>()));
 
                             let cpu_time_track_id = TrackId::Counter { id: *cpu_time_id };
-                            submitted_tracks
-                                .entry(cpu_time_track_id)
-                                .or_insert_with(|| {
-                                    let cpu_time_track = Message::Event(Event::Track(Track {
-                                        name: "cpu_time",
-                                        track_type: TrackType::Counter {
-                                            id: *cpu_time_id,
-                                            unit: Some("%"),
-                                        },
-                                        parent: Some(TrackType::Thread {
-                                            tid: *tid,
-                                            pid: *pid,
-                                        }),
-                                    }));
-                                    callback(cpu_time_track);
-                                });
+                            if let std::collections::hash_map::Entry::Vacant(e) =
+                                submitted_tracks.entry(cpu_time_track_id)
+                            {
+                                let cpu_time_track = Message::Event(Event::Track(Track {
+                                    name: "cpu_time",
+                                    track_type: TrackType::Counter {
+                                        id: *cpu_time_id,
+                                        unit: Some("%"),
+                                    },
+                                    parent: Some(TrackType::Thread {
+                                        tid: *tid,
+                                        pid: *pid,
+                                    }),
+                                }));
+                                if callback(cpu_time_track) != 0 {
+                                    return 1;
+                                }
+                                e.insert(());
+                            }
 
                             debug!(
                                 pid = pid,
@@ -226,7 +229,9 @@ where
                                 labels: Cow::Owned(Labels::new()),
                                 unit: Some("%"),
                             }));
-                            callback(cpu_counter);
+                            if callback(cpu_counter) != 0 {
+                                return 1;
+                            }
 
                             let kernel_percent =
                                 (thread_stats.kernel_time_ns as f64 / elapsed_ns) * 100.0;
@@ -234,22 +239,25 @@ where
                             let kernel_time_track_id = TrackId::Counter {
                                 id: *kernel_time_id,
                             };
-                            submitted_tracks
-                                .entry(kernel_time_track_id)
-                                .or_insert_with(|| {
-                                    let kernel_time_track = Message::Event(Event::Track(Track {
-                                        name: "kernel_time",
-                                        track_type: TrackType::Counter {
-                                            id: *kernel_time_id,
-                                            unit: Some("%"),
-                                        },
-                                        parent: Some(TrackType::Thread {
-                                            tid: *tid,
-                                            pid: *pid,
-                                        }),
-                                    }));
-                                    callback(kernel_time_track);
-                                });
+                            if let std::collections::hash_map::Entry::Vacant(e) =
+                                submitted_tracks.entry(kernel_time_track_id)
+                            {
+                                let kernel_time_track = Message::Event(Event::Track(Track {
+                                    name: "kernel_time",
+                                    track_type: TrackType::Counter {
+                                        id: *kernel_time_id,
+                                        unit: Some("%"),
+                                    },
+                                    parent: Some(TrackType::Thread {
+                                        tid: *tid,
+                                        pid: *pid,
+                                    }),
+                                }));
+                                if callback(kernel_time_track) != 0 {
+                                    return 1;
+                                }
+                                e.insert(());
+                            }
 
                             debug!(
                                 pid = pid,
@@ -267,7 +275,9 @@ where
                                 labels: Cow::Owned(Labels::new()),
                                 unit: Some("%"),
                             }));
-                            callback(kernel_counter);
+                            if callback(kernel_counter) != 0 {
+                                return 1;
+                            }
                             thread_stats.cpu_time_ns = 0;
                             thread_stats.kernel_time_ns = 0;
                             thread_stats.min_timestamp = max_timestamp;
@@ -333,7 +343,7 @@ where
 
 impl<'this, F> Filterable for CpuUtil<'this, F>
 where
-    F: for<'a> FnMut(Message<'a>) + 'this,
+    F: for<'a> FnMut(Message<'a>) -> i32 + 'this,
 {
     fn filter(&mut self, pid: i32) -> Result<(), BpfError> {
         self.add_pid_filter(pid as u32)
@@ -409,6 +419,7 @@ mod root_tests {
                     };
                     events_clone.borrow_mut().push(test_counter);
                 }
+                0
             })
             .expect("failed to build cpu util");
 
@@ -483,6 +494,7 @@ mod root_tests {
                     };
                     events_clone.borrow_mut().push(test_counter);
                 }
+                0
             })
             .expect("failed to build cpu util");
 

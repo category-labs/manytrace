@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tracker = builder.build(|message: Message| {
         let event = match message {
             Message::Event(e) => e,
-            _ => return,
+            _ => return 0,
         };
         if let Event::Track(track) = event {
             match track.track_type {
@@ -33,6 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             }
         }
+        0
     })?;
 
     while running.load(Ordering::SeqCst) {

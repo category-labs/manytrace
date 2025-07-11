@@ -7,12 +7,31 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::io::BufWriter;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, OnceLock,
+};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 static LONG_VERSION: OnceLock<String> = OnceLock::new();
+
+#[derive(Clone)]
+struct Termination(Arc<AtomicBool>);
+
+impl Termination {
+    fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+
+    fn terminate(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+
+    fn is_terminated(&self) -> bool {
+        !self.0.load(Ordering::Relaxed)
+    }
+}
 
 fn get_long_version() -> &'static str {
     LONG_VERSION.get_or_init(|| {
@@ -60,11 +79,11 @@ fn main() -> Result<()> {
     let config = Config::load(&args.config)
         .with_context(|| format!("failed to load config path={}", args.config))?;
 
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
+    let termination = Termination::new();
+    let t = termination.clone();
     ctrlc::set_handler(move || {
         tracing::info!("received ctrl+c, shutting down gracefully...");
-        r.store(false, Ordering::SeqCst);
+        t.terminate();
     })?;
 
     let file = File::create(&args.output)?;
@@ -74,10 +93,15 @@ fn main() -> Result<()> {
     let mut bpf_object = config.bpf.build()?;
     let callback = {
         let converter = converter.clone();
-        move |message: bpf::BpfMessage| {
+        let termination = termination.clone();
+        move |message: bpf::BpfMessage| -> i32 {
+            if termination.is_terminated() {
+                return 1;
+            }
             if let Err(e) = converter.borrow_mut().convert_message(&message) {
                 tracing::warn!(error = %e, "failed to convert bpf event");
             }
+            0
         }
     };
     let mut stream_allocator = protocol::StreamIdAllocator::new();
@@ -132,7 +156,7 @@ fn main() -> Result<()> {
     let duration = args.duration;
     let mut last_keepalive = Instant::now();
 
-    while running.load(Ordering::SeqCst) && duration.is_none_or(|d| start_time.elapsed() < d) {
+    while !termination.is_terminated() && duration.is_none_or(|d| start_time.elapsed() < d) {
         if last_keepalive.elapsed() >= Duration::from_secs(1) {
             for client in &mut user_clients {
                 if let Err(e) = client.send_continue() {
@@ -156,7 +180,11 @@ fn main() -> Result<()> {
         }
 
         if let Err(e) = bpf_consumer.consume() {
-            tracing::warn!(error = %e, "bpf consume error");
+            if termination.is_terminated() {
+                tracing::debug!(error = %e, "bpf consume error during termination");
+            } else {
+                tracing::warn!(error = %e, "bpf consume error");
+            }
         }
 
         sleep(Duration::from_millis(10));
