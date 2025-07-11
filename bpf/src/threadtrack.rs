@@ -89,7 +89,7 @@ impl Object {
 
     pub fn build<'bd, F>(&'bd mut self, callback: F) -> Result<ThreadTracker<'bd, F>, BpfError>
     where
-        F: for<'a> FnMut(Message<'a>) + 'bd,
+        F: for<'a> FnMut(Message<'a>) -> i32 + 'bd,
     {
         ThreadTracker::new(&mut self.object, self.config.clone(), callback)
     }
@@ -104,7 +104,7 @@ pub struct ThreadTracker<'this, F> {
 
 impl<'this, F> ThreadTracker<'this, F>
 where
-    F: for<'a> FnMut(Message<'a>) + 'this,
+    F: for<'a> FnMut(Message<'a>) -> i32 + 'this,
 {
     fn new(
         open_object: &'this mut MaybeUninit<OpenObject>,
@@ -158,8 +158,12 @@ where
                     }))
                 };
 
-                callback_clone.borrow_mut()(message);
-                0
+                let result = callback_clone.borrow_mut()(message);
+                if result != 0 {
+                    1
+                } else {
+                    0
+                }
             })
             .map_err(|e| BpfError::MapError(format!("failed to add ring buffer: {}", e)))?;
 
@@ -316,7 +320,7 @@ mod root_tests {
             .build(move |message| {
                 let event = match message {
                     Message::Event(e) => e,
-                    _ => return,
+                    _ => return 0,
                 };
                 let test_event = match event {
                     Event::Track(track) => match &track.track_type {
@@ -329,11 +333,12 @@ mod root_tests {
                             tid: *tid,
                             pid: *pid,
                         },
-                        _ => return,
+                        _ => return 0,
                     },
-                    _ => return,
+                    _ => return 0,
                 };
                 events_clone.borrow_mut().push(test_event);
+                0
             })
             .expect("failed to build thread tracker");
 
@@ -378,5 +383,61 @@ mod root_tests {
             })
             .collect();
         assert!(!thread_events.is_empty(), "no thread name events captured");
+    }
+
+    #[rstest]
+    #[ignore = "requires root"]
+    fn test_callback_returns_one(threadtrack_setup: ThreadTrackerFixture) {
+        assert!(is_root());
+
+        let events_clone = threadtrack_setup.events.clone();
+        let mut callback_count = 0;
+
+        let mut object = Object::new(ThreadTrackerConfig {
+            ringbuf: default_ringbuf_size(),
+        });
+        let mut tracker = object
+            .build(move |message| {
+                callback_count += 1;
+                if callback_count <= 1 {
+                    if let Message::Event(Event::Track(track)) = message {
+                        let test_event = match &track.track_type {
+                            TrackType::Process { pid } => TestEvent::ProcessName {
+                                name: track.name.to_string(),
+                                pid: *pid,
+                            },
+                            TrackType::Thread { tid, pid } => TestEvent::ThreadName {
+                                name: track.name.to_string(),
+                                tid: *tid,
+                                pid: *pid,
+                            },
+                            _ => return 0,
+                        };
+                        events_clone.borrow_mut().push(test_event);
+                    }
+                    return 0;
+                }
+                1
+            })
+            .expect("failed to build thread tracker");
+
+        let mut child = std::process::Command::new("ls")
+            .arg("-la")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn test process");
+
+        let _ = child.wait();
+
+        let result = tracker.consume();
+        assert!(result.is_ok(), "consume failed when callback returned 1");
+
+        let collected_events = threadtrack_setup.events.borrow();
+        assert_eq!(
+            collected_events.len(),
+            1,
+            "expected exactly one event before termination"
+        );
     }
 }

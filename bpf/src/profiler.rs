@@ -107,7 +107,7 @@ impl Object {
         stream_id: crate::StreamId,
     ) -> Result<Profiler<'obj, F>, BpfError>
     where
-        F: for<'a> FnMut(Message<'a>) + 'obj,
+        F: for<'a> FnMut(Message<'a>) -> i32 + 'obj,
     {
         Profiler::new(
             &mut self.object,
@@ -128,7 +128,7 @@ pub struct Profiler<'obj, F> {
 
 impl<'obj, F> Profiler<'obj, F>
 where
-    F: for<'a> FnMut(Message<'a>) + 'obj,
+    F: for<'a> FnMut(Message<'a>) -> i32 + 'obj,
 {
     fn new(
         open_object: &'obj mut MaybeUninit<libbpf_rs::OpenObject>,
@@ -233,22 +233,29 @@ where
                         let (callstack_iid, interned_data_opt) = interned.data();
 
                         if let Some(interned_data) = interned_data_opt {
-                            callback(Message::Stream {
+                            if callback(Message::Stream {
                                 stream_id,
                                 event: Event::InternedData(interned_data),
-                            });
+                            }) != 0
+                            {
+                                return 1;
+                            }
                         }
 
                         let sample = create_sample(event, callstack_iid);
-                        callback(Message::Stream {
+                        if callback(Message::Stream {
                             stream_id,
                             event: Event::Sample(sample),
-                        });
+                        }) != 0
+                        {
+                            return 1;
+                        }
                     }
                     Err(err) => {
                         warn!(err = %err, pid = %pid, "failed to symbolize stack");
                     }
                 }
+
                 0
             })
             .map_err(|e| BpfError::LoadError(format!("failed to add ring buffer: {}", e)))?;
@@ -285,7 +292,7 @@ where
 
 impl<'obj, F> Filterable for Profiler<'obj, F>
 where
-    F: for<'a> FnMut(Message<'a>) + 'obj,
+    F: for<'a> FnMut(Message<'a>) -> i32 + 'obj,
 {
     fn filter(&mut self, pid: i32) -> Result<(), BpfError> {
         let key = pid.to_ne_bytes();
@@ -400,6 +407,7 @@ mod root_tests {
                         }
                         _ => {}
                     }
+                    0
                 },
                 &symbolizer,
                 0,

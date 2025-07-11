@@ -79,7 +79,7 @@ impl Object {
         symbolizer: &'bd Symbolizer,
     ) -> Result<SchedTrace<'bd, F>, BpfError>
     where
-        F: for<'a> FnMut(Message<'a>) + 'bd,
+        F: for<'a> FnMut(Message<'a>) -> i32 + 'bd,
     {
         let schedtrace =
             SchedTrace::new(&mut self.object, self.config.clone(), callback, symbolizer)?;
@@ -95,7 +95,7 @@ pub struct SchedTrace<'this, F> {
 
 impl<'this, F> SchedTrace<'this, F>
 where
-    F: for<'a> FnMut(Message<'a>) + 'this,
+    F: for<'a> FnMut(Message<'a>) -> i32 + 'this,
 {
     fn new(
         open_object: &'this mut MaybeUninit<OpenObject>,
@@ -200,12 +200,15 @@ where
                             track_id,
                             labels: Cow::Owned(labels),
                         };
-                        callback(Message::Event(Event::Span(span)));
+                        if callback(Message::Event(Event::Span(span))) != 0 {
+                            return 1;
+                        }
                     }
                     Err(e) => {
                         debug!(error = %e, "failed to parse sched span event");
                     }
                 }
+
                 0
             })
             .map_err(|e| BpfError::MapError(format!("failed to add ring buffer: {}", e)))?;
@@ -247,7 +250,7 @@ where
 
 impl<'this, F> Filterable for SchedTrace<'this, F>
 where
-    F: for<'a> FnMut(Message<'a>) + 'this,
+    F: for<'a> FnMut(Message<'a>) -> i32 + 'this,
 {
     fn filter(&mut self, pid: i32) -> Result<(), BpfError> {
         self.add_pid_filter(pid as u32)
@@ -328,6 +331,7 @@ mod root_tests {
                         _ => TestMessage::Other,
                     };
                     messages_clone.borrow_mut().push(test_msg);
+                    0
                 },
                 &symbolizer,
             )
