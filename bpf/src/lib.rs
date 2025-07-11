@@ -18,6 +18,17 @@ pub(crate) trait Filterable {
     fn filter(&mut self, pid: i32) -> Result<(), BpfError>;
 }
 
+fn get_monotonic_timestamp() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
 pub use cpuutil::CpuUtilConfig;
 pub use perfcounter::PerfCounterConfig;
 pub use profiler::ProfilerConfig;
@@ -187,6 +198,7 @@ impl BpfConfig {
             cpuutil_filters,
             profiler_filters,
             schedtrace_filters,
+            watched_tgids: HashSet::new(),
         })
     }
 }
@@ -201,6 +213,7 @@ pub struct BpfObject {
     cpuutil_filters: HashSet<String>,
     profiler_filters: HashSet<String>,
     schedtrace_filters: HashSet<String>,
+    watched_tgids: HashSet<i32>,
 }
 
 impl BpfObject {
@@ -263,61 +276,101 @@ impl BpfObject {
                 let cpuutil_ref = cpuutil_rc.clone();
                 let profiler_ref = profiler_rc.clone();
                 let schedtrace_ref = schedtrace_rc.clone();
+                let mut watched_tgids = std::mem::take(&mut self.watched_tgids);
 
                 let wrapper_callback = move |message: Message<'_>| -> i32 {
-                    if let Message::Event(protocol::Event::Track(ref track)) = message {
-                        if let protocol::TrackType::Process { pid } = track.track_type {
-                            let name = track.name;
+                    let mut should_emit_discovered = false;
+                    let mut thread_tid = 0;
+                    let mut thread_pid = 0;
 
-                            if let Some(ref cpu) = cpuutil_ref {
-                                let base_name = name.split('/').next_back().unwrap_or(name);
-                                if cpuutil_filters.contains(name)
-                                    || cpuutil_filters.contains(base_name)
-                                {
-                                    if let Err(e) = cpu.borrow_mut().filter(pid) {
-                                        tracing::warn!(
-                                        "Failed to add process {} (pid {}) to cpuutil filter: {}",
-                                        name,
-                                        pid,
-                                        e
-                                    );
+                    if let Message::Event(protocol::Event::Track(ref track)) = message {
+                        match track.track_type {
+                            protocol::TrackType::Process { pid } => {
+                                let name = track.name;
+
+                                if let Some(ref cpu) = cpuutil_ref {
+                                    let base_name = name.split('/').next_back().unwrap_or(name);
+                                    if cpuutil_filters.contains(name)
+                                        || cpuutil_filters.contains(base_name)
+                                    {
+                                        if let Err(e) = cpu.borrow_mut().filter(pid) {
+                                            tracing::warn!(
+                                            "Failed to add process {} (pid {}) to cpuutil filter: {}",
+                                            name,
+                                            pid,
+                                            e
+                                        );
+                                        } else {
+                                            watched_tgids.insert(pid);
+                                        }
+                                    }
+                                }
+                                if let Some(ref cpu) = profiler_ref {
+                                    let base_name = name.split('/').next_back().unwrap_or(name);
+                                    if profiler_filters.contains(name)
+                                        || profiler_filters.contains(base_name)
+                                    {
+                                        if let Err(e) = cpu.borrow_mut().filter(pid) {
+                                            tracing::warn!(
+                                            "Failed to add process {} (pid {}) to profiler filter: {}",
+                                            name,
+                                            pid,
+                                            e
+                                        );
+                                        } else {
+                                            watched_tgids.insert(pid);
+                                        }
+                                    }
+                                }
+                                if let Some(ref sched) = schedtrace_ref {
+                                    let base_name = name.split('/').next_back().unwrap_or(name);
+                                    if schedtrace_filters.contains(name)
+                                        || schedtrace_filters.contains(base_name)
+                                    {
+                                        if let Err(e) = sched.borrow_mut().filter(pid) {
+                                            tracing::warn!(
+                                            "Failed to add process {} (pid {}) to schedtrace filter: {}",
+                                            name,
+                                            pid,
+                                            e
+                                        );
+                                        } else {
+                                            watched_tgids.insert(pid);
+                                        }
                                     }
                                 }
                             }
-                            if let Some(ref cpu) = profiler_ref {
-                                let base_name = name.split('/').next_back().unwrap_or(name);
-                                if profiler_filters.contains(name)
-                                    || profiler_filters.contains(base_name)
-                                {
-                                    if let Err(e) = cpu.borrow_mut().filter(pid) {
-                                        tracing::warn!(
-                                        "Failed to add process {} (pid {}) to profiler filter: {}",
-                                        name,
-                                        pid,
-                                        e
-                                    );
-                                    }
+                            protocol::TrackType::Thread { tid, pid } => {
+                                if watched_tgids.contains(&pid) {
+                                    should_emit_discovered = true;
+                                    thread_tid = tid;
+                                    thread_pid = pid;
                                 }
                             }
-                            if let Some(ref sched) = schedtrace_ref {
-                                let base_name = name.split('/').next_back().unwrap_or(name);
-                                if schedtrace_filters.contains(name)
-                                    || schedtrace_filters.contains(base_name)
-                                {
-                                    if let Err(e) = sched.borrow_mut().filter(pid) {
-                                        tracing::warn!(
-                                        "Failed to add process {} (pid {}) to schedtrace filter: {}",
-                                        name,
-                                        pid,
-                                        e
-                                    );
-                                    }
-                                }
-                            }
+                            _ => {}
                         }
                     }
 
-                    user_callback(message)
+                    let result = user_callback(message);
+                    if result != 0 {
+                        return result;
+                    }
+
+                    if should_emit_discovered {
+                        let instant_event =
+                            Message::Event(protocol::Event::Instant(protocol::Instant {
+                                name: "discovered",
+                                timestamp: get_monotonic_timestamp(),
+                                track_id: protocol::TrackId::Thread {
+                                    tid: thread_tid,
+                                    pid: thread_pid,
+                                },
+                                labels: std::borrow::Cow::Owned(protocol::Labels::new()),
+                            }));
+                        return user_callback(instant_event);
+                    }
+
+                    result
                 };
 
                 let callback =
