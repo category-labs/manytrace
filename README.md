@@ -57,6 +57,30 @@ user_samples = true
 filter_process = ["monad-rpc", "monad-node"]
 ```
 
+#### scheduler tracing
+provides detailed visibility into thread scheduling behavior by tracking when threads are running on cpu, when they become blocked and why, and when they are ready to run but waiting to be scheduled.
+**warning**: this extension has significant overhead due to the high frequency of scheduling events.
+only enable it for short durations (up to 5 seconds) when debugging specific performance issues.
+
+each span represents a period of cpu execution and includes kernel function names where the thread was blocked.
+the cpu label indicates which core the thread was scheduled on, making it easy to track cpu migrations and identify scheduling delays.
+
+```toml
+[bpf.schedtrace]
+filter_process = []
+```
+
+#### performance counters
+collects hardware performance counter statistics like cpu cycles, instructions, cache misses, and branch predictions.
+
+```toml
+[bpf.perfcounter]
+frequency = 100
+counters = ["cpu-cycles", "instructions", "cache-misses", "ipc"]
+# supported counters: cpu-cycles, instructions, branches, cache-misses, 
+# page-faults, context-switches, cpu-migrations, ipc
+```
+
 #### user tracing
 ![spans](_assets/manytrace_spans.png)
 
