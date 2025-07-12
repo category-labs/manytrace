@@ -207,8 +207,9 @@ where
                                         pid: *pid,
                                     }),
                                 }));
-                                if callback(cpu_time_track) != 0 {
-                                    return 1;
+                                let result = callback(cpu_time_track);
+                                if result != 0 {
+                                    return result;
                                 }
                                 e.insert(());
                             }
@@ -229,8 +230,9 @@ where
                                 labels: Cow::Owned(Labels::new()),
                                 unit: Some("%"),
                             }));
-                            if callback(cpu_counter) != 0 {
-                                return 1;
+                            let result = callback(cpu_counter);
+                            if result != 0 {
+                                return result;
                             }
 
                             let kernel_percent =
@@ -253,8 +255,9 @@ where
                                         pid: *pid,
                                     }),
                                 }));
-                                if callback(kernel_time_track) != 0 {
-                                    return 1;
+                                let result = callback(kernel_time_track);
+                                if result != 0 {
+                                    return result;
                                 }
                                 e.insert(());
                             }
@@ -275,8 +278,9 @@ where
                                 labels: Cow::Owned(Labels::new()),
                                 unit: Some("%"),
                             }));
-                            if callback(kernel_counter) != 0 {
-                                return 1;
+                            let result = callback(kernel_counter);
+                            if result != 0 {
+                                return result;
                             }
                             thread_stats.cpu_time_ns = 0;
                             thread_stats.kernel_time_ns = 0;
