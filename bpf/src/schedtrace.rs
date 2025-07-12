@@ -200,8 +200,9 @@ where
                             track_id,
                             labels: Cow::Owned(labels),
                         };
-                        if callback(Message::Event(Event::Span(span))) != 0 {
-                            return 1;
+                        let result = callback(Message::Event(Event::Span(span)));
+                        if result != 0 {
+                            return result;
                         }
                     }
                     Err(e) => {

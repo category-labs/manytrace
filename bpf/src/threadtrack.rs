@@ -160,7 +160,7 @@ where
 
                 let result = callback_clone.borrow_mut()(message);
                 if result != 0 {
-                    1
+                    result
                 } else {
                     0
                 }

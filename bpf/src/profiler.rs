@@ -233,22 +233,22 @@ where
                         let (callstack_iid, interned_data_opt) = interned.data();
 
                         if let Some(interned_data) = interned_data_opt {
-                            if callback(Message::Stream {
+                            let result = callback(Message::Stream {
                                 stream_id,
                                 event: Event::InternedData(interned_data),
-                            }) != 0
-                            {
-                                return 1;
+                            });
+                            if result != 0 {
+                                return result;
                             }
                         }
 
                         let sample = create_sample(event, callstack_iid);
-                        if callback(Message::Stream {
+                        let result = callback(Message::Stream {
                             stream_id,
                             event: Event::Sample(sample),
-                        }) != 0
-                        {
-                            return 1;
+                        });
+                        if result != 0 {
+                            return result;
                         }
                     }
                     Err(err) => {

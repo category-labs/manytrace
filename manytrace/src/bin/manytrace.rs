@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, OnceLock,
 };
-use std::thread::sleep;
+use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
 static LONG_VERSION: OnceLock<String> = OnceLock::new();
@@ -85,6 +85,16 @@ fn main() -> Result<()> {
         tracing::info!("received ctrl+c, shutting down gracefully...");
         t.terminate();
     })?;
+    if let Some(duration) = args.duration {
+        thread::Builder::new().name("timer".to_string()).spawn({
+            let t = termination.clone();
+            move || {
+                sleep(duration);
+                t.terminate();
+                tracing::debug!("timer fired");
+            }
+        })?;
+    }
 
     let file = File::create(&args.output)?;
     let buffered_writer = BufWriter::new(file);
@@ -96,7 +106,7 @@ fn main() -> Result<()> {
         let termination = termination.clone();
         move |message: bpf::BpfMessage| -> i32 {
             if termination.is_terminated() {
-                return 1;
+                return -1;
             }
             if let Err(e) = converter.borrow_mut().convert_message(&message) {
                 tracing::warn!(error = %e, "failed to convert bpf event");
@@ -152,11 +162,9 @@ fn main() -> Result<()> {
         }
     }
 
-    let start_time = Instant::now();
-    let duration = args.duration;
     let mut last_keepalive = Instant::now();
 
-    while !termination.is_terminated() && duration.is_none_or(|d| start_time.elapsed() < d) {
+    while !termination.is_terminated() {
         if last_keepalive.elapsed() >= Duration::from_secs(1) {
             for client in &mut user_clients {
                 if let Err(e) = client.send_continue() {
@@ -175,6 +183,9 @@ fn main() -> Result<()> {
                         }
                     }
                     Err(e) => tracing::warn!(error = %e, "failed to deserialize event"),
+                }
+                if termination.is_terminated() {
+                    break;
                 }
             }
         }
