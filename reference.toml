@@ -132,6 +132,12 @@ frequency = 9
 # Default: 1048576 (1 MB)
 ringbuf = 1048576
 
+# Enable scaled mode to convert byte counts to bits/s rates
+# When true: reports network rates in bits per second (bits/s)
+# When false: reports cumulative byte counts
+# Default: false
+scaled = false
+
 # ---------------------------
 # Performance Counter Module
 # ---------------------------
