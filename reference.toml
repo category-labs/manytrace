@@ -119,6 +119,20 @@ filter_process = []
 ringbuf = 262144
 
 # ---------------------------
+# Network Tracking Module
+# ---------------------------
+# Tracks network I/O rates for TCP and UDP traffic
+
+[bpf.nettrack]
+# Sampling frequency in Hz (how often to collect network statistics)
+# Default: 9
+frequency = 9
+
+# Size of the ring buffer for network tracking events (in bytes)
+# Default: 1048576 (1 MB)
+ringbuf = 1048576
+
+# ---------------------------
 # Performance Counter Module
 # ---------------------------
 # Collects hardware and software performance counter metrics
