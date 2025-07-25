@@ -25,6 +25,8 @@ pub struct NetTrackConfig {
     pub frequency: u64,
     #[serde(default = "default_ringbuf_size")]
     pub ringbuf: usize,
+    #[serde(default)]
+    pub scaled: bool,
 }
 
 fn default_frequency() -> u64 {
@@ -101,7 +103,7 @@ impl CounterIds {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct NetStats {
     tcp_send_total: u64,
     tcp_recv_total: u64,
@@ -205,7 +207,7 @@ where
     ) -> Result<Self, BpfError> {
         let mut skel = Self::load_and_attach_skel(open_object, &config)?;
         let counter_ids = CounterIds::new();
-        let ringbuf = Self::create_ring_buffer(&skel, callback, counter_ids)?;
+        let ringbuf = Self::create_ring_buffer(&skel, callback, counter_ids, config.scaled)?;
         let perf_links = Self::setup_perf_events(&mut skel, freq)?;
 
         Ok(NetTrack {
@@ -216,15 +218,56 @@ where
         })
     }
 
-    fn create_counter_config<'a>(stats: &NetStats, ids: &CounterIds) -> [(&'a str, f64, u64); 6] {
-        [
-            ("tcp_send", stats.tcp_send_total as f64, ids.tcp_send),
-            ("tcp_recv", stats.tcp_recv_total as f64, ids.tcp_recv),
-            ("udp_send", stats.udp_send_total as f64, ids.udp_send),
-            ("udp_recv", stats.udp_recv_total as f64, ids.udp_recv),
-            ("total_send", stats.total_send() as f64, ids.total_send),
-            ("total_recv", stats.total_recv() as f64, ids.total_recv),
-        ]
+    fn create_counters<'a>(
+        stats: &NetStats,
+        ids: &CounterIds,
+        scaled: bool,
+        time_diff_s: Option<f64>,
+    ) -> Vec<(&'a str, f64, u64)> {
+        if scaled {
+            let time_diff = time_diff_s.unwrap_or(1.0);
+            vec![
+                (
+                    "tcp_send_rate",
+                    (stats.tcp_send_total as f64 * 8.0) / time_diff,
+                    ids.tcp_send,
+                ),
+                (
+                    "tcp_recv_rate",
+                    (stats.tcp_recv_total as f64 * 8.0) / time_diff,
+                    ids.tcp_recv,
+                ),
+                (
+                    "udp_send_rate",
+                    (stats.udp_send_total as f64 * 8.0) / time_diff,
+                    ids.udp_send,
+                ),
+                (
+                    "udp_recv_rate",
+                    (stats.udp_recv_total as f64 * 8.0) / time_diff,
+                    ids.udp_recv,
+                ),
+                (
+                    "total_send_rate",
+                    (stats.total_send() as f64 * 8.0) / time_diff,
+                    ids.total_send,
+                ),
+                (
+                    "total_recv_rate",
+                    (stats.total_recv() as f64 * 8.0) / time_diff,
+                    ids.total_recv,
+                ),
+            ]
+        } else {
+            vec![
+                ("tcp_send", stats.tcp_send_total as f64, ids.tcp_send),
+                ("tcp_recv", stats.tcp_recv_total as f64, ids.tcp_recv),
+                ("udp_send", stats.udp_send_total as f64, ids.udp_send),
+                ("udp_recv", stats.udp_recv_total as f64, ids.udp_recv),
+                ("total_send", stats.total_send() as f64, ids.total_send),
+                ("total_recv", stats.total_recv() as f64, ids.total_recv),
+            ]
+        }
     }
 
     fn submit_counter<G>(
@@ -234,18 +277,19 @@ where
         timestamp: u64,
         submitted_tracks: &mut HashMap<TrackId, ()>,
         callback: &mut G,
+        unit: &str,
     ) -> i32
     where
         G: FnMut(Message) -> i32,
     {
         let track_id = TrackId::Counter { id };
 
-        if let std::collections::hash_map::Entry::Vacant(e) = submitted_tracks.entry(track_id) {
+        if submitted_tracks.insert(track_id, ()).is_none() {
             let track = Message::Event(Event::Track(Track {
                 name,
                 track_type: TrackType::Counter {
                     id,
-                    unit: Some("bytes"),
+                    unit: Some(unit),
                 },
                 parent: None,
             }));
@@ -253,7 +297,6 @@ where
             if result != 0 {
                 return result;
             }
-            e.insert(());
         }
 
         debug!(
@@ -263,21 +306,21 @@ where
             "emitting network counter"
         );
 
-        let counter = Message::Event(Event::Counter(Counter {
+        callback(Message::Event(Event::Counter(Counter {
             name,
             value,
             timestamp,
             track_id,
             labels: Cow::Owned(Labels::new()),
-            unit: Some("bytes"),
-        }));
-        callback(counter)
+            unit: Some(unit),
+        })))
     }
 
     fn create_ring_buffer(
         skel: &NettrackSkel<'this>,
         mut callback: F,
         counter_ids: CounterIds,
+        scaled: bool,
     ) -> Result<libbpf_rs::RingBuffer<'this>, BpfError> {
         let mut submitted_tracks: HashMap<TrackId, ()> = HashMap::new();
 
@@ -285,31 +328,53 @@ where
         let nprocs = libbpf_rs::num_possible_cpus().unwrap();
         let mut boundaries_reported = 0;
         let mut stats = NetStats::default();
+        let mut prev_timestamp = 0u64;
 
         builder
             .add(&skel.maps.events, move |data| {
                 let net_event: &NetEvent = data.try_into().unwrap();
                 stats.accumulate(net_event);
-
                 boundaries_reported += 1;
+
                 if boundaries_reported == nprocs {
                     boundaries_reported = 0;
 
-                    let counters = Self::create_counter_config(&stats, &counter_ids);
-                    for (name, value, id) in &counters {
+                    if scaled && prev_timestamp == 0 {
+                        prev_timestamp = stats.last_timestamp;
+                        stats.reset();
+                        return 0;
+                    }
+
+                    let time_diff_s = if scaled && prev_timestamp > 0 {
+                        let time_diff_ns = stats.last_timestamp.saturating_sub(prev_timestamp);
+                        if time_diff_ns > 0 {
+                            Some(time_diff_ns as f64 / 1_000_000_000.0)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let counters = Self::create_counters(&stats, &counter_ids, scaled, time_diff_s);
+                    let unit = if scaled { "bits/s" } else { "bytes" };
+
+                    for (name, value, id) in counters {
                         let result = Self::submit_counter(
                             name,
-                            *value,
-                            *id,
+                            value,
+                            id,
                             stats.last_timestamp,
                             &mut submitted_tracks,
                             &mut callback,
+                            unit,
                         );
                         if result != 0 {
                             return result;
                         }
                     }
 
+                    prev_timestamp = stats.last_timestamp;
                     stats.reset();
                 }
 
@@ -481,6 +546,7 @@ mod root_tests {
         let config = NetTrackConfig {
             frequency: 100,
             ringbuf: default_ringbuf_size(),
+            scaled: false,
         };
 
         let mut object = Object::new(config);
