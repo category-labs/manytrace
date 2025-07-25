@@ -8,6 +8,7 @@ use tracing::debug;
 pub use protocol::Message as BpfMessage;
 
 pub mod cpuutil;
+pub mod nettrack;
 mod perf_event;
 pub mod perfcounter;
 pub mod profiler;
@@ -30,6 +31,7 @@ fn get_monotonic_timestamp() -> u64 {
 }
 
 pub use cpuutil::CpuUtilConfig;
+pub use nettrack::NetTrackConfig;
 pub use perfcounter::PerfCounterConfig;
 pub use profiler::ProfilerConfig;
 pub use schedtrace::SchedTraceConfig;
@@ -51,6 +53,8 @@ pub struct BpfConfig {
     pub thread_tracker: Option<ThreadTrackerConfig>,
     #[serde(default)]
     pub cpu_util: Option<CpuUtilConfig>,
+    #[serde(default)]
+    pub nettrack: Option<NetTrackConfig>,
     #[serde(default)]
     pub profiler: Option<ProfilerConfig>,
     #[serde(default)]
@@ -176,6 +180,17 @@ impl BpfConfig {
             (None, HashSet::new())
         };
 
+        let nettrack = if let Some(cfg) = self.nettrack {
+            debug!(
+                module = "nettrack",
+                frequency = cfg.frequency,
+                "initializing network tracking"
+            );
+            Some(nettrack::Object::new(cfg))
+        } else {
+            None
+        };
+
         let perfcounter = if let Some(cfg) = self.perfcounter {
             debug!(
                 module = "perfcounter",
@@ -192,6 +207,7 @@ impl BpfConfig {
             symbolizer: Symbolizer::new(),
             threadtrack,
             cpuutils,
+            nettrack,
             profiler,
             schedtrace,
             perfcounter,
@@ -207,6 +223,7 @@ pub struct BpfObject {
     symbolizer: Symbolizer,
     threadtrack: Option<threadtrack::Object>,
     cpuutils: Option<cpuutil::Object>,
+    nettrack: Option<nettrack::Object>,
     profiler: Option<profiler::Object>,
     schedtrace: Option<schedtrace::Object>,
     perfcounter: Option<perfcounter::Object>,
@@ -226,6 +243,14 @@ impl BpfObject {
         F: for<'a> FnMut(Message<'a>) -> i32 + Clone + 'this,
     {
         let cpuutil = if let Some(ref mut obj) = self.cpuutils {
+            Some(obj.build(
+                Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>) -> i32>,
+            )?)
+        } else {
+            None
+        };
+
+        let nettrack = if let Some(ref mut obj) = self.nettrack {
             Some(obj.build(
                 Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>) -> i32>,
             )?)
@@ -259,6 +284,7 @@ impl BpfObject {
         };
 
         let cpuutil_rc = cpuutil.map(|c| Rc::new(RefCell::new(c)));
+        let nettrack_rc = nettrack.map(|n| Rc::new(RefCell::new(n)));
         let profiler_rc = profiler.map(|p| Rc::new(RefCell::new(p)));
         let schedtrace_rc = schedtrace.map(|s| Rc::new(RefCell::new(s)));
         let perfcounter_rc = perfcounter.map(|p| Rc::new(RefCell::new(p)));
@@ -387,6 +413,7 @@ impl BpfObject {
         Ok(BpfConsumer {
             threadtrack,
             cpuutil: cpuutil_rc,
+            nettrack: nettrack_rc,
             profiler: profiler_rc,
             schedtrace: schedtrace_rc,
             perfcounter: perfcounter_rc,
@@ -399,6 +426,7 @@ type Callback<'cb> = Box<dyn for<'a> FnMut(Message<'a>) -> i32 + 'cb>;
 pub struct BpfConsumer<'this> {
     threadtrack: Option<threadtrack::ThreadTracker<'this, Callback<'this>>>,
     cpuutil: Option<Rc<RefCell<cpuutil::CpuUtil<'this, Callback<'this>>>>>,
+    nettrack: Option<Rc<RefCell<nettrack::NetTrack<'this, Callback<'this>>>>>,
     profiler: Option<Rc<RefCell<profiler::Profiler<'this, Callback<'this>>>>>,
     schedtrace: Option<Rc<RefCell<schedtrace::SchedTrace<'this, Callback<'this>>>>>,
     perfcounter: Option<Rc<RefCell<perfcounter::PerfCounter<'this, Callback<'this>>>>>,
@@ -411,6 +439,9 @@ impl<'this> BpfConsumer<'this> {
         }
         if let Some(ref util) = self.cpuutil {
             util.borrow_mut().consume()?;
+        }
+        if let Some(ref net) = self.nettrack {
+            net.borrow_mut().consume()?;
         }
         if let Some(ref prof) = self.profiler {
             prof.borrow_mut().consume()?;
@@ -430,6 +461,9 @@ impl<'this> BpfConsumer<'this> {
         }
         if let Some(ref util) = self.cpuutil {
             util.borrow_mut().poll(timeout)?;
+        }
+        if let Some(ref net) = self.nettrack {
+            net.borrow_mut().poll(timeout)?;
         }
         if let Some(ref prof) = self.profiler {
             prof.borrow_mut().poll(timeout)?;
@@ -623,6 +657,36 @@ counters = ["ipc", "cache-misses"]
         }
 
         assert_eq!(derived_info[0].0, "ipc");
+    }
+
+    #[test]
+    fn test_nettrack_config_parsing() {
+        let config_str = r#"
+[nettrack]
+frequency = 50
+ringbuf = 2097152
+"#;
+
+        let config = BpfConfig::from_toml_str(config_str).unwrap();
+        assert!(config.nettrack.is_some());
+
+        let nettrack_config = config.nettrack.as_ref().unwrap();
+        assert_eq!(nettrack_config.frequency, 50);
+        assert_eq!(nettrack_config.ringbuf, 2097152);
+    }
+
+    #[test]
+    fn test_nettrack_default_config() {
+        let config_str = r#"
+nettrack = {}
+"#;
+
+        let config = BpfConfig::from_toml_str(config_str).unwrap();
+        assert!(config.nettrack.is_some());
+
+        let nettrack_config = config.nettrack.as_ref().unwrap();
+        assert_eq!(nettrack_config.frequency, 9); // default_frequency
+        assert_eq!(nettrack_config.ringbuf, 1024 * 1024); // default_ringbuf_size
     }
 
     #[test]
