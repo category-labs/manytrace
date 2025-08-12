@@ -334,15 +334,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
-name = "chrome-trace-format"
-version = "0.1.1"
-dependencies = [
- "bon",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1048,7 +1039,6 @@ version = "0.1.1"
 dependencies = [
  "agent",
  "bpf",
- "chrome-trace-format",
  "clap",
  "ctrlc",
  "eyre",

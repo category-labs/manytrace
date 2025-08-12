@@ -12,7 +12,6 @@ path = "src/bin/manytrace.rs"
 [dependencies]
 agent = { path = "../agent" }
 protocol = { path = "../protocol" }
-chrome-trace-format = { path = "../chrome-trace-format" }
 bpf = { path = "../bpf" }
 perfetto-format = { path = "../perfetto-format" }
 clap.workspace = true
