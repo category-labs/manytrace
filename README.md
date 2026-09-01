@@ -64,6 +64,7 @@ only enable it for short durations (up to 5 seconds) when debugging specific per
 
 each span represents a period of cpu execution and includes kernel function names where the thread was blocked.
 the cpu label indicates which core the thread was scheduled on, making it easy to track cpu migrations and identify scheduling delays.
+the scheduler timeline distinguishes `running`, `runnable` (ready but waiting for cpu), and `blocked` (sleeping or waiting for a resource); runnable spans include whether they followed a wakeup, preemption, or another `TASK_RUNNING` switch.
 
 ```toml
 [bpf.schedtrace]

@@ -36,7 +36,11 @@ use std::time::Duration;
 use tracing::debug;
 
 const SCHED_EVENT_BLOCKED: u32 = 1;
-const SCHED_EVENT_WAKING: u32 = 2;
+const SCHED_EVENT_RUNNABLE: u32 = 2;
+
+const RUNNABLE_REASON_PREEMPTED: u32 = 1;
+const RUNNABLE_REASON_STILL_RUNNING: u32 = 2;
+const RUNNABLE_REASON_WAKEUP: u32 = 3;
 
 fn default_ringbuf_size() -> usize {
     2 * 1024 * 1024
@@ -60,8 +64,10 @@ pub struct SchedSpanEvent {
     pub start_time: u64,
     pub end_time: u64,
     pub cpu: u32,
-    pub frame: u64,
     pub event_type: u32,
+    pub frame: u64,
+    pub reason: u32,
+    pub task_state: u32,
 }
 
 unsafe impl plain::Plain for SchedSpanEvent {}
@@ -177,7 +183,7 @@ where
                         let track_id_value = thread_track_ids.entry(key).or_insert_with(|| {
                             let id = rng.gen::<u64>();
                             let track = Track {
-                                name: "kernel",
+                                name: "scheduler",
                                 track_type: TrackType::Custom { id },
                                 parent: Some(TrackType::Thread {
                                     pid: event.pid as i32,
@@ -195,17 +201,23 @@ where
                         let span_name = match event.event_type {
                             SCHED_EVENT_BLOCKED if event.frame != 0 => {
                                 match resolve_kernel_symbol(symbolizer_ref, event.frame) {
-                                    Some(sym) => format!("waiting [{}]", sym.name),
-                                    None => format!("waiting [0x{:x}]", event.frame),
+                                    Some(sym) => format!("blocked [{}]", sym.name),
+                                    None => format!("blocked [0x{:x}]", event.frame),
                                 }
                             }
-                            SCHED_EVENT_BLOCKED => "waiting".to_string(),
-                            SCHED_EVENT_WAKING => "waking".to_string(),
+                            SCHED_EVENT_BLOCKED => "blocked".to_string(),
+                            SCHED_EVENT_RUNNABLE => "runnable".to_string(),
                             _ => "running".to_string(),
                         };
 
                         let mut labels = Labels::new();
                         labels.ints.insert("cpu", event.cpu as i64);
+                        if event.event_type == SCHED_EVENT_BLOCKED {
+                            labels.ints.insert("task_state", event.task_state as i64);
+                        }
+                        if let Some(reason) = runnable_reason(event.reason) {
+                            labels.strings.insert("reason", Cow::Borrowed(reason));
+                        }
 
                         let span = Span {
                             name: span_name.as_str(),
@@ -291,6 +303,39 @@ fn resolve_kernel_symbol<'a>(symbolizer: &'a Symbolizer, addr: u64) -> Option<Sy
             debug!(error = %e, addr = %addr, "failed to symbolize kernel address");
             None
         }
+    }
+}
+
+fn runnable_reason(reason: u32) -> Option<&'static str> {
+    match reason {
+        RUNNABLE_REASON_PREEMPTED => Some("preempted"),
+        RUNNABLE_REASON_STILL_RUNNING => Some("still_running"),
+        RUNNABLE_REASON_WAKEUP => Some("wakeup"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_layout_matches_bpf_structure() {
+        assert_eq!(std::mem::size_of::<SchedSpanEvent>(), 48);
+    }
+
+    #[test]
+    fn runnable_reasons_are_stable_trace_labels() {
+        assert_eq!(
+            runnable_reason(RUNNABLE_REASON_PREEMPTED),
+            Some("preempted")
+        );
+        assert_eq!(
+            runnable_reason(RUNNABLE_REASON_STILL_RUNNING),
+            Some("still_running")
+        );
+        assert_eq!(runnable_reason(RUNNABLE_REASON_WAKEUP), Some("wakeup"));
+        assert_eq!(runnable_reason(0), None);
     }
 }
 
@@ -396,8 +441,21 @@ mod root_tests {
 
         assert!(!span_messages.is_empty(), "should have produced some spans");
 
+        assert!(
+            span_messages
+                .iter()
+                .any(|(name, _)| name.starts_with("blocked")),
+            "sleeping test thread should produce a blocked span"
+        );
+
         for (span_name, has_cpu) in &span_messages {
             assert!(*has_cpu, "span event '{}' should have cpu label", span_name);
+            assert!(
+                span_name.as_str() == "running"
+                    || span_name.as_str() == "runnable"
+                    || span_name.starts_with("blocked"),
+                "unexpected scheduler state span '{span_name}'"
+            );
         }
     }
 }
