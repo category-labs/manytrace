@@ -1,0 +1,10 @@
+[bpf.block_io]
+frequency = 20
+operations = ["read", "write", "flush", "discard"]
+metrics = ["throughput", "iops", "latency", "saturation", "errors"]
+max_devices = 64
+max_requests = 4096
+timeline = true
+timeline_sample_every = 4
+timeline_min_latency_us = 10
+ringbuf = 1048576

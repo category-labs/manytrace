@@ -118,11 +118,7 @@ fn main() -> Result<()> {
     let mut bpf_object = config.bpf.build()?;
     let callback = {
         let converter = converter.clone();
-        let termination = termination.clone();
         move |message: bpf::BpfMessage| -> i32 {
-            if termination.is_terminated() {
-                return -1;
-            }
             if let Err(e) = converter.borrow_mut().convert_message(&message) {
                 tracing::warn!(error = %e, "failed to convert bpf event");
             }
@@ -214,6 +210,10 @@ fn main() -> Result<()> {
         }
 
         sleep(Duration::from_millis(10));
+    }
+
+    if let Err(e) = bpf_consumer.flush() {
+        tracing::warn!(error = %e, "failed to flush final bpf map snapshots");
     }
 
     drop(bpf_consumer);

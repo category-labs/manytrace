@@ -220,6 +220,7 @@ dependencies = [
  "libbpf-rs",
  "libbpf-sys",
  "libc",
+ "nix",
  "ouroboros",
  "plain",
  "protocol",
