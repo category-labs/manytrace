@@ -46,7 +46,7 @@ fn get_monotonic_timestamp() -> u64 {
 }
 
 pub use cpuutil::CpuUtilConfig;
-pub use nettrack::NetTrackConfig;
+pub use nettrack::{NetDirection, NetMetric, NetProtocol, NetScope, NetTrackConfig};
 pub use perfcounter::PerfCounterConfig;
 pub use profiler::ProfilerConfig;
 pub use schedtrace::SchedTraceConfig;
@@ -124,7 +124,12 @@ impl BpfConfig {
                 .as_ref()
                 .map(|cfg| !cfg.filter_process.is_empty() || global_filter.is_some())
                 .unwrap_or(false);
-            cpu_needs || profiler_needs || schedtrace_needs
+            let nettrack_needs = self
+                .nettrack
+                .as_ref()
+                .map(|cfg| !cfg.filter_process.is_empty() || global_filter.is_some())
+                .unwrap_or(false);
+            cpu_needs || profiler_needs || schedtrace_needs || nettrack_needs
         };
 
         if needs_process_filtering && self.thread_tracker.is_none() {
@@ -195,15 +200,26 @@ impl BpfConfig {
             (None, HashSet::new())
         };
 
-        let nettrack = if let Some(cfg) = self.nettrack {
+        let (nettrack, nettrack_filters) = if let Some(mut cfg) = self.nettrack {
+            if let Some(ref global) = global_filter {
+                cfg.filter_process = global.clone();
+            }
             debug!(
                 module = "nettrack",
                 frequency = cfg.frequency,
+                peer_frequency = cfg.peer_frequency,
+                protocols = ?cfg.protocols,
+                directions = ?cfg.directions,
+                scopes = ?cfg.scopes,
+                metrics = ?cfg.metrics,
+                pid_filters = ?cfg.pid_filters,
+                filter_process = ?cfg.filter_process,
                 "initializing network tracking"
             );
-            Some(nettrack::Object::new(cfg))
+            let filters: HashSet<String> = cfg.filter_process.iter().cloned().collect();
+            (Some(nettrack::Object::new(cfg)), filters)
         } else {
-            None
+            (None, HashSet::new())
         };
 
         let perfcounter = if let Some(cfg) = self.perfcounter {
@@ -229,6 +245,7 @@ impl BpfConfig {
             cpuutil_filters,
             profiler_filters,
             schedtrace_filters,
+            nettrack_filters,
             watched_tgids: HashSet::new(),
         })
     }
@@ -245,6 +262,7 @@ pub struct BpfObject {
     cpuutil_filters: HashSet<String>,
     profiler_filters: HashSet<String>,
     schedtrace_filters: HashSet<String>,
+    nettrack_filters: HashSet<String>,
     watched_tgids: HashSet<i32>,
 }
 
@@ -308,15 +326,18 @@ impl BpfObject {
             let has_cpuutil = cpuutil_rc.is_some();
             let has_profiler = profiler_rc.is_some();
             let has_schedtrace = schedtrace_rc.is_some();
+            let has_nettrack = nettrack_rc.is_some();
 
-            if has_cpuutil || has_profiler || has_schedtrace {
+            if has_cpuutil || has_profiler || has_schedtrace || has_nettrack {
                 let mut user_callback = callback.clone();
                 let cpuutil_filters = self.cpuutil_filters.clone();
                 let profiler_filters = self.profiler_filters.clone();
                 let schedtrace_filters = self.schedtrace_filters.clone();
+                let nettrack_filters = self.nettrack_filters.clone();
                 let cpuutil_ref = cpuutil_rc.clone();
                 let profiler_ref = profiler_rc.clone();
                 let schedtrace_ref = schedtrace_rc.clone();
+                let nettrack_ref = nettrack_rc.clone();
                 let mut watched_tgids = std::mem::take(&mut self.watched_tgids);
 
                 let wrapper_callback = move |message: Message<'_>| -> i32 {
@@ -371,6 +392,23 @@ impl BpfObject {
                                         if let Err(e) = sched.borrow_mut().filter(pid) {
                                             tracing::warn!(
                                             "Failed to add process {} (pid {}) to schedtrace filter: {}",
+                                            name,
+                                            pid,
+                                            e
+                                        );
+                                        } else {
+                                            watched_tgids.insert(pid);
+                                        }
+                                    }
+                                }
+                                if let Some(ref net) = nettrack_ref {
+                                    let base_name = name.split('/').next_back().unwrap_or(name);
+                                    if nettrack_filters.contains(name)
+                                        || nettrack_filters.contains(base_name)
+                                    {
+                                        if let Err(e) = net.borrow_mut().filter(pid) {
+                                            tracing::warn!(
+                                            "Failed to add process {} (pid {}) to nettrack filter: {}",
                                             name,
                                             pid,
                                             e
@@ -702,6 +740,54 @@ nettrack = {}
         let nettrack_config = config.nettrack.as_ref().unwrap();
         assert_eq!(nettrack_config.frequency, 9); // default_frequency
         assert_eq!(nettrack_config.ringbuf, 1024 * 1024); // default_ringbuf_size
+        assert_eq!(nettrack_config.scopes, vec![NetScope::Host]);
+        assert_eq!(nettrack_config.metrics, vec![NetMetric::Bytes]);
+        assert_eq!(nettrack_config.peer_frequency, 1);
+    }
+
+    #[test]
+    fn test_detailed_nettrack_config() {
+        let config = BpfConfig::from_toml_str(
+            r#"
+[nettrack]
+frequency = 5
+peer_frequency = 2
+protocols = ["tcp"]
+directions = ["send"]
+scopes = ["host", "process", "peer"]
+metrics = ["bytes", "operations", "errors"]
+pid_filters = [1234]
+max_process_entries = 64
+max_peer_entries = 128
+max_peer_tracks = 32
+"#,
+        )
+        .unwrap();
+        let config = config.nettrack.unwrap();
+        assert_eq!(config.protocols, vec![NetProtocol::Tcp]);
+        assert_eq!(config.directions, vec![NetDirection::Send]);
+        assert_eq!(
+            config.scopes,
+            vec![NetScope::Host, NetScope::Process, NetScope::Peer]
+        );
+        assert_eq!(
+            config.metrics,
+            vec![NetMetric::Bytes, NetMetric::Operations, NetMetric::Errors]
+        );
+        assert_eq!(config.max_peer_entries, 128);
+        assert_eq!(config.max_peer_tracks, 32);
+    }
+
+    #[test]
+    fn test_nettrack_process_filter_requires_threadtrack() {
+        let config = BpfConfig::from_toml_str(
+            r#"
+[nettrack]
+filter_process = ["monad-node"]
+"#,
+        )
+        .unwrap();
+        assert!(config.build().is_err());
     }
 
     #[test]

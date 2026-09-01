@@ -11,9 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nettrack` BPF module for network I/O monitoring
   Config options:
   `frequency`: sampling frequency in Hz
-  `scaled`: report rates in bits/s instead of cumulative bytes
+  `scaled`: report rates in bits/s instead of interval bytes
+- Configurable `nettrack` protocols, directions, metrics, and host/process/peer scopes
+- Bounded per-process and per-peer network aggregation with independent peer sampling frequency
 
 ### Fixed
+- Count successful TCP and UDP payload bytes instead of requested send sizes
+- Replace `nettrack` perf-event and ring-buffer boundaries with cumulative map snapshots
 - Spawn a separate thread for timer interrupt to fix starvation issues ([189c785](https://github.com/category-labs/manytrace/commit/189c785))
 
 ## [0.1.1] - 2025-07-11

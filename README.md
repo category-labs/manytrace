@@ -81,6 +81,28 @@ counters = ["cpu-cycles", "instructions", "cache-misses", "ipc"]
 # page-faults, context-switches, cpu-migrations, ipc
 ```
 
+#### network tracking
+
+collects successful TCP and UDP application payload bytes. counters are aggregated in BPF maps
+and sampled from userspace, so network tracking does not use periodic per-CPU interrupts or a
+ring buffer. host byte throughput is the low-overhead default; process and peer aggregation are
+independent opt-in scopes.
+
+```toml
+[bpf.nettrack]
+frequency = 5
+peer_frequency = 1
+scaled = true
+protocols = ["tcp", "udp"]
+directions = ["send", "receive"]
+scopes = ["host"] # add "process" or "peer" for more detail
+metrics = ["bytes"] # optional: "operations", "errors"
+```
+
+process-name filters require `bpf.thread_tracker`. peer tracks contain remote IP addresses and
+ports and may make traces sensitive; their kernel-map and Perfetto cardinality are bounded by
+`max_peer_entries` and `max_peer_tracks`.
+
 #### user tracing
 ![spans](_assets/manytrace_spans.png)
 

@@ -1,0 +1,11 @@
+[bpf.nettrack]
+frequency = 10
+peer_frequency = 5
+scaled = false
+protocols = ["tcp", "udp"]
+directions = ["send", "receive"]
+scopes = ["host", "process", "peer"]
+metrics = ["bytes", "operations", "errors"]
+max_process_entries = 64
+max_peer_entries = 128
+max_peer_tracks = 32
