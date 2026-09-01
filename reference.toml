@@ -156,6 +156,54 @@ max_peer_entries = 4096
 max_peer_tracks = 512
 
 # ---------------------------
+# Block I/O Tracking Module
+# ---------------------------
+# Tracks physical block-request rates, latency, depth, and optional spans.
+
+[bpf.block_io]
+# Cumulative maps are read at this frequency. No periodic BPF interrupt is used.
+# Default: 9
+frequency = 9
+
+# Request operations retained by the BPF programs.
+# Values: "read", "write", "flush", "discard", "other"
+# Default: ["read", "write"]
+operations = ["read", "write"]
+
+# Counter families to emit.
+# Values: "throughput", "iops", "latency", "saturation", "errors"
+# Default: all values
+metrics = ["throughput", "iops", "latency", "saturation", "errors"]
+
+# Optional physical-device filters. Accepts a kernel device name, /dev path,
+# or major:minor. Partition filters resolve to their physical parent queue.
+# Default: [] (all devices)
+devices = []
+
+# Bounded BPF map capacities.
+# Defaults: 64 devices and 32768 live requests
+max_devices = 64
+max_requests = 32768
+
+# Emit an individual issue-to-completion span for sampled block requests.
+# This is disabled by default; aggregate counters never require ring-buffer events.
+timeline = false
+
+# With timeline enabled, emit approximately one out of every N request attempts.
+# Default: 1
+timeline_sample_every = 1
+
+# With timeline enabled, omit spans below this total request latency.
+# Default: 0
+timeline_min_latency_us = 0
+
+# Timeline ring-buffer capacity in bytes. Must be a power of two, at least 4096,
+# and fit in an unsigned 32-bit map size.
+# It is reduced to 4096 internally when timeline is disabled.
+# Default: 8388608 (8 MiB)
+ringbuf = 8388608
+
+# ---------------------------
 # Performance Counter Module
 # ---------------------------
 # Collects hardware and software performance counter metrics

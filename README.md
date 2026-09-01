@@ -103,6 +103,40 @@ process-name filters require `bpf.thread_tracker`. peer tracks contain remote IP
 ports and may make traces sensitive; their kernel-map and Perfetto cardinality are bounded by
 `max_peer_entries` and `max_peer_tracks`.
 
+#### block I/O tracking
+
+collects completed block-device throughput, IOPS, errors, queue/service/total latency, queue
+depth, busy time, and time with requests waiting to issue. cumulative BPF maps are sampled at
+`frequency`, so the default aggregate mode does not send an event for every request. each
+physical device becomes a Perfetto timeline, with filesystem and mount labels resolved in
+userspace when the request identifies a mounted partition.
+
+```toml
+[bpf.block_io]
+frequency = 10
+operations = ["read", "write"]
+metrics = ["throughput", "iops", "latency", "saturation", "errors"]
+devices = ["nvme0n1"] # optional: device name, /dev path, or major:minor
+timeline = false
+```
+
+set `timeline = true` to add issue-to-completion request spans. this opt-in mode uses a ring
+buffer; bound its overhead with `timeline_sample_every`, `timeline_min_latency_us`, `ringbuf`,
+and `max_requests`. aggregate counters remain unsampled and do not depend on the ring buffer.
+throughput/error-only configurations also bypass per-request lifecycle state; enabling IOPS,
+latency, saturation, or timeline spans turns that correlation on.
+
+throughput is completed block payload, not logical filesystem syscall bytes: cached writes appear
+when writeback reaches the block layer, and cached reads do not appear. queue latency is time not
+being serviced, service latency is cumulative issue-to-completion time across attempts, and total
+latency is first observation to final completion. `busy_percent` means at least one request is in
+flight; `saturated_percent` means at least one request is queued waiting to issue. percentile
+counters are approximate upper bounds from log2 microsecond histograms. layered devices can appear
+on multiple tracks, so their byte totals should not be added without accounting for the stack.
+request PID/comm attribution is best effort: buffered writeback and merged I/O can be owned by a
+kernel worker rather than the application. `max_inflight` and `max_queued` are lifetime high-water
+marks for the collector run.
+
 #### user tracing
 ![spans](_assets/manytrace_spans.png)
 
