@@ -43,6 +43,7 @@ fn main() {
     build_bpf("threadtrack");
     build_bpf("cpuutil");
     build_bpf("nettrack");
+    build_bpf("blocktrack");
     build_bpf("profiler");
     build_bpf("schedtrace");
     build_bpf("perfcounter");

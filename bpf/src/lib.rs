@@ -22,6 +22,7 @@ use tracing::debug;
 
 pub use protocol::Message as BpfMessage;
 
+pub mod blocktrack;
 pub mod cpuutil;
 pub mod nettrack;
 mod perf_event;
@@ -45,6 +46,7 @@ fn get_monotonic_timestamp() -> u64 {
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
+pub use blocktrack::{BlockIoConfig, BlockMetric, BlockOperation};
 pub use cpuutil::CpuUtilConfig;
 pub use nettrack::{NetDirection, NetMetric, NetProtocol, NetScope, NetTrackConfig};
 pub use perfcounter::PerfCounterConfig;
@@ -70,6 +72,8 @@ pub struct BpfConfig {
     pub cpu_util: Option<CpuUtilConfig>,
     #[serde(default)]
     pub nettrack: Option<NetTrackConfig>,
+    #[serde(default)]
+    pub block_io: Option<BlockIoConfig>,
     #[serde(default)]
     pub profiler: Option<ProfilerConfig>,
     #[serde(default)]
@@ -222,6 +226,21 @@ impl BpfConfig {
             (None, HashSet::new())
         };
 
+        let block_io = if let Some(cfg) = self.block_io {
+            debug!(
+                module = "block_io",
+                frequency = cfg.frequency,
+                operations = ?cfg.operations,
+                metrics = ?cfg.metrics,
+                devices = ?cfg.devices,
+                timeline = cfg.timeline,
+                "initializing block I/O tracker"
+            );
+            Some(blocktrack::Object::new(cfg))
+        } else {
+            None
+        };
+
         let perfcounter = if let Some(cfg) = self.perfcounter {
             debug!(
                 module = "perfcounter",
@@ -239,6 +258,7 @@ impl BpfConfig {
             threadtrack,
             cpuutils,
             nettrack,
+            block_io,
             profiler,
             schedtrace,
             perfcounter,
@@ -256,6 +276,7 @@ pub struct BpfObject {
     threadtrack: Option<threadtrack::Object>,
     cpuutils: Option<cpuutil::Object>,
     nettrack: Option<nettrack::Object>,
+    block_io: Option<blocktrack::Object>,
     profiler: Option<profiler::Object>,
     schedtrace: Option<schedtrace::Object>,
     perfcounter: Option<perfcounter::Object>,
@@ -291,6 +312,14 @@ impl BpfObject {
             None
         };
 
+        let block_io = if let Some(ref mut obj) = self.block_io {
+            Some(obj.build(
+                Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>) -> i32>,
+            )?)
+        } else {
+            None
+        };
+
         let profiler = if let Some(ref mut obj) = self.profiler {
             let callback = Box::new(callback.clone()) as Box<dyn for<'a> FnMut(Message<'a>) -> i32>;
             let stream_id = stream_allocator.allocate();
@@ -318,6 +347,7 @@ impl BpfObject {
 
         let cpuutil_rc = cpuutil.map(|c| Rc::new(RefCell::new(c)));
         let nettrack_rc = nettrack.map(|n| Rc::new(RefCell::new(n)));
+        let block_io_rc = block_io.map(|io| Rc::new(RefCell::new(io)));
         let profiler_rc = profiler.map(|p| Rc::new(RefCell::new(p)));
         let schedtrace_rc = schedtrace.map(|s| Rc::new(RefCell::new(s)));
         let perfcounter_rc = perfcounter.map(|p| Rc::new(RefCell::new(p)));
@@ -467,6 +497,7 @@ impl BpfObject {
             threadtrack,
             cpuutil: cpuutil_rc,
             nettrack: nettrack_rc,
+            block_io: block_io_rc,
             profiler: profiler_rc,
             schedtrace: schedtrace_rc,
             perfcounter: perfcounter_rc,
@@ -480,6 +511,7 @@ pub struct BpfConsumer<'this> {
     threadtrack: Option<threadtrack::ThreadTracker<'this, Callback<'this>>>,
     cpuutil: Option<Rc<RefCell<cpuutil::CpuUtil<'this, Callback<'this>>>>>,
     nettrack: Option<Rc<RefCell<nettrack::NetTrack<'this, Callback<'this>>>>>,
+    block_io: Option<Rc<RefCell<blocktrack::BlockIo<'this, Callback<'this>>>>>,
     profiler: Option<Rc<RefCell<profiler::Profiler<'this, Callback<'this>>>>>,
     schedtrace: Option<Rc<RefCell<schedtrace::SchedTrace<'this, Callback<'this>>>>>,
     perfcounter: Option<Rc<RefCell<perfcounter::PerfCounter<'this, Callback<'this>>>>>,
@@ -495,6 +527,9 @@ impl<'this> BpfConsumer<'this> {
         }
         if let Some(ref net) = self.nettrack {
             net.borrow_mut().consume()?;
+        }
+        if let Some(ref block_io) = self.block_io {
+            block_io.borrow_mut().consume()?;
         }
         if let Some(ref prof) = self.profiler {
             prof.borrow_mut().consume()?;
@@ -518,6 +553,9 @@ impl<'this> BpfConsumer<'this> {
         if let Some(ref net) = self.nettrack {
             net.borrow_mut().poll(timeout)?;
         }
+        if let Some(ref block_io) = self.block_io {
+            block_io.borrow_mut().poll(timeout)?;
+        }
         if let Some(ref prof) = self.profiler {
             prof.borrow_mut().poll(timeout)?;
         }
@@ -526,6 +564,16 @@ impl<'this> BpfConsumer<'this> {
         }
         if let Some(ref perf) = self.perfcounter {
             perf.borrow_mut().poll(timeout)?;
+        }
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> Result<(), BpfError> {
+        if let Some(ref net) = self.nettrack {
+            net.borrow_mut().flush()?;
+        }
+        if let Some(ref block_io) = self.block_io {
+            block_io.borrow_mut().flush()?;
         }
         Ok(())
     }
@@ -788,6 +836,47 @@ filter_process = ["monad-node"]
         )
         .unwrap();
         assert!(config.build().is_err());
+    }
+
+    #[test]
+    fn test_block_io_default_config() {
+        let config = BpfConfig::from_toml_str("block_io = {}\n").unwrap();
+        let block = config.block_io.unwrap();
+        assert_eq!(block.frequency, 9);
+        assert_eq!(
+            block.operations,
+            vec![BlockOperation::Read, BlockOperation::Write]
+        );
+        assert!(block.metrics.contains(&BlockMetric::Latency));
+        assert!(!block.timeline);
+    }
+
+    #[test]
+    fn test_detailed_block_io_config() {
+        let config = BpfConfig::from_toml_str(
+            r#"
+[block_io]
+frequency = 20
+operations = ["read", "write", "flush", "discard"]
+metrics = ["throughput", "iops", "latency", "saturation", "errors"]
+devices = ["nvme0n1", "259:0"]
+max_devices = 8
+max_requests = 4096
+timeline = true
+timeline_sample_every = 10
+timeline_min_latency_us = 100
+ringbuf = 1048576
+"#,
+        )
+        .unwrap();
+        let block = config.block_io.unwrap();
+        assert_eq!(block.frequency, 20);
+        assert_eq!(block.operations.len(), 4);
+        assert_eq!(block.devices, vec!["nvme0n1", "259:0"]);
+        assert_eq!(block.max_requests, 4096);
+        assert!(block.timeline);
+        assert_eq!(block.timeline_sample_every, 10);
+        assert_eq!(block.timeline_min_latency_us, 100);
     }
 
     #[test]

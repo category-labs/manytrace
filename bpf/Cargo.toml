@@ -17,6 +17,7 @@ eyre = { workspace = true }
 libbpf-rs = { workspace = true }
 libbpf-sys = { workspace = true }
 libc = { workspace = true }
+nix = { workspace = true }
 ouroboros = "0.18"
 plain = { workspace = true }
 rand = { workspace = true }
