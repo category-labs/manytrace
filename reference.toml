@@ -124,19 +124,36 @@ ringbuf = 262144
 # Tracks network I/O rates for TCP and UDP traffic
 
 [bpf.nettrack]
-# Sampling frequency in Hz (how often to collect network statistics)
+# Host and process map sampling frequency in Hz
 # Default: 9
 frequency = 9
 
-# Size of the ring buffer for network tracking events (in bytes)
-# Default: 1048576 (1 MB)
-ringbuf = 1048576
+# Peer maps are normally read less often to limit userspace and trace overhead
+# Default: 1
+peer_frequency = 1
 
 # Enable scaled mode to convert byte counts to bits/s rates
 # When true: reports network rates in bits per second (bits/s)
 # When false: reports cumulative byte counts
 # Default: false
 scaled = false
+
+# Protocols, directions, aggregation scopes, and metrics to collect.
+# Low-overhead defaults are ["tcp", "udp"], ["send", "receive"],
+# ["host"], and ["bytes"]. Process and peer aggregation are opt-in.
+protocols = ["tcp", "udp"]
+directions = ["send", "receive"]
+scopes = ["host"]
+metrics = ["bytes"]
+
+# Optional PID and process-name filters. Process names require thread_tracker.
+pid_filters = []
+filter_process = []
+
+# Bounded map and Perfetto cardinality controls
+max_process_entries = 1024
+max_peer_entries = 4096
+max_peer_tracks = 512
 
 # ---------------------------
 # Performance Counter Module
