@@ -7,7 +7,7 @@ https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
-## [0.1.2] - 2026-10-14
+## [0.1.3] - 2026-10-14
 
 Add network and block I/O profiling to correlate application spans with network
 traffic and disk activity in Perfetto. Scheduler tracing now distinguishes CPU
@@ -34,6 +34,11 @@ Process-name filtering uses `filter_process` and requires `bpf.thread_tracker`.
 Bound process and peer collection with `max_process_entries`, `max_peer_entries`,
 and `max_peer_tracks`. Counters are sampled from cumulative BPF maps without
 periodic per-CPU interrupts or a ring buffer.
+
+For workloads that start immediately when the user agent connects, set
+`pid_filters` before capture to retain the first network events. Process-name
+filters take effect after the initial thread-tracker scan and can miss startup
+traffic.
 
 #### Block I/O profiling
 
